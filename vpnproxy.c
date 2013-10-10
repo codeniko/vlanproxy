@@ -41,10 +41,10 @@ void printHelp()
 }
 
 /**************************************************
-* allocate_tunnel:
-* open a tun or tap device and returns the file
-* descriptor to read/write back to the caller
-*****************************************/
+ * allocate_tunnel:
+ * open a tun or tap device and returns the file
+ * descriptor to read/write back to the caller
+ *****************************************/
 int allocate_tunnel(char *dev, int flags) 
 {
 	int fd, error;
@@ -125,7 +125,7 @@ void *threadTCP(void *arg)
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
 	int16_t *p_type = (int16_t *)buffer; //pointer to space in buffer holding type
-	int16_t *p_length = ((int16_t *)buffer)+1; //pointer to space in buffer holding length of message
+	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
 
 	if (proxyinfo->mode == MODE_SERVER || proxyinfo->mode == MODE_CLIENT)
 	{
@@ -133,22 +133,15 @@ void *threadTCP(void *arg)
 		while (1)
 		{
 			log_info("CLIENT: Loop restart");
-			
-			memset(buffer, 0, BUFFER_SIZE);
 
 			//Read data from TCP
 			int bytesRead = read(proxyinfo->connectionFD, buffer, BUFFER_SIZE);
-			if (bytesRead < HEADER_SIZE)
-			{
-				fprintf(stderr, "Invalid packet received, too short. Dropping packet.\n");
-				continue;
-			}
-
 			//Get length of data from header
 			int length = ntohs(*p_length);
 			log_info("Length of packet is %d", length);
-			if (length == 0) //Unexpected packet, it will be resent since this is TCP stream
+			if (bytesRead == 0 || length == 0)
 			{
+				fprintf(stderr, "Invalid packet received, too short. Dropping packet.\n");
 				continue;
 			}
 
@@ -160,11 +153,21 @@ void *threadTCP(void *arg)
 				continue;
 			}
 
+			/*************** DEBUG *************/
+			printf("Data by byte- sending to Tun from TCP (%d total):\n",bytesRead);
+			int i;
+			for(i=HEADER_SIZE;i<length;i++) {
+				printf("%4d ",buffer[i]);
+			}
+			printf("\n\n");
+
+			/*************************************/
+
 			//Send data to TAP interface
 			if (write(proxyinfo->tapFD, buffer+HEADER_SIZE, length) < 0)
 			{
-					perror("Failed to write to TAP interface. \n");
-					//break
+				perror("Failed to write to TAP interface. \n");
+				//break
 			}
 		}
 	} else
@@ -192,8 +195,23 @@ void *threadTAP(void *arg)
 	{
 		int dataLength = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE);
 		*p_length = htons(dataLength);
-		
+
 		log_info("Sending a packet with data length: %d", dataLength);
+		
+		
+		
+		/****************DEBUG ************/
+		printf("Data by byte- sending to TCP from Tun (%d total):\n",dataLength);
+		int i;
+		for(i=0;i<dataLength;i++) {
+			printf("%4d ",buffer[i]);
+			if(i==3)
+				printf("\n");
+		}
+		printf("\n\n");
+		/********************************************/
+
+
 		//write to TCP socket
 		if (write(proxyinfo->connectionFD, buffer, dataLength+HEADER_SIZE) < 0)
 		{
@@ -223,8 +241,8 @@ int createSocket(char *host, int port, struct ProxyInfo *proxyinfo)
 	} else
 	{
 		/* If internet "a.d.c.d" address is specified, use inet_addr()
-		* to convert it into real address. If host name is specified,
-		* use gethostbyname() to resolve its address */
+		 * to convert it into real address. If host name is specified,
+		 * use gethostbyname() to resolve its address */
 		to.sin_addr.s_addr = inet_addr(host); /* If "a.b.c.d" addr */
 		if (to.sin_addr.s_addr == -1)
 		{
@@ -310,3 +328,4 @@ int main(int argc, char **argv)
 	close(proxyinfo.tapFD);
 	return 0;
 }
+
