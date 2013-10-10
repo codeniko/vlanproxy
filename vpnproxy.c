@@ -17,18 +17,20 @@
 #include <sys/time.h>
 
 #include <netdb.h>
+#include "dbg.h"
 
 #define MODE_SERVER 		0
 #define MODE_CLIENT 		1
-#define MAX_CONNECTIONS		10
+#define MAX_CONNECTIONS		1
 #define HEADER_FIELD_SIZE	2
+#define HEADER_SIZE			4
 #define BUFFER_SIZE			2048
 
 
 struct ProxyInfo
 {
 	int mode;
-	int socketFD;
+	int connectionFD;
 	int tapFD;
 	struct sockaddr_in sockaddr;
 };
@@ -66,109 +68,94 @@ int allocate_tunnel(char *dev, int flags)
 	return fd;
 }
 
-//receive encapsulated, must decapsulate and send to tap
-void *threadTCP(void *arg)
+//returns negative number on fail
+int createConnection(struct ProxyInfo *proxyinfo)
 {
-	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
-	char vlan_type[HEADER_FIELD_SIZE];
-	char vlan_length[HEADER_FIELD_SIZE];
-	char buffer[BUFFER_SIZE- 2*(HEADER_FIELD_SIZE)];
-	int connectFD = -1;
 
 	if (proxyinfo->mode == MODE_SERVER)
 	{
 		//Assigning a name to the socket
-		if (bind(proxyinfo->socketFD, (struct sockaddr *) (&(proxyinfo->sockaddr)), sizeof(proxyinfo->sockaddr)) < 0)
+		if (bind(proxyinfo->connectionFD, (struct sockaddr *) (&(proxyinfo->sockaddr)), sizeof(proxyinfo->sockaddr)) < 0)
 		{
 			perror("Server binding failed.\n");
-			close(proxyinfo->socketFD);
-			return NULL;
+			return -1;
 		}
 
 		//Set the number of allowed connections in the queue
-		if (listen(proxyinfo->socketFD, MAX_CONNECTIONS) < 0)
+		if (listen(proxyinfo->connectionFD, MAX_CONNECTIONS) < 0)
 		{
 			perror("Server listening failed. \n");
-			close(proxyinfo->socketFD);
-			return NULL;
+			return -1;
 		}
 
-		//Accept connections from client
-		for (;;)
+		debug("SERVER: before connection accept");
+		int connectFD = accept(proxyinfo->connectionFD, NULL, NULL);
+		debug("SERVER: after connection accept");
+		if (connectFD < 0)
 		{
-			connectFD = accept(proxyinfo->socketFD, NULL, NULL);
-			if (connectFD < 0)
-			{
-				perror("Server unable to accept connection. \n");
-				close(proxyinfo->socketFD);
-				return NULL;
-			}
-			
-			//Perform read and write to TAP interface for active connection indefinitely
-			for (;;)
-			{
-				//Get vlan type
-				if (read(connectFD, vlan_type, HEADER_FIELD_SIZE) < 0)
-				{
-					break;
-				}
-				//Get Length of message
-				if (read(connectFD, vlan_length, HEADER_FIELD_SIZE) < 0)
-				{
-					break;
-				}
-
-				size_t lengthOfMessage = atoi(vlan_length); //convert string to integer
-
-				//Get data
-				if (read(connectFD, buffer, lengthOfMessage) < 0)
-				{
-					break;
-				}
-
-				//Send data to TAP interface
-				if (write(proxyinfo->tapFD, buffer, lengthOfMessage) < 0)
-				{
-					perror("Failed to write to TAP interface. \n");
-					//break
-				}
-			}
+			perror("Server unable to accept connection. \n");
+			return -1;
 		}
+
+		//replace socketFD that was initially opened with active connection FD
+		close(proxyinfo->connectionFD);
+		proxyinfo->connectionFD = connectFD;
+		return 0;
 	} else if (proxyinfo->mode == MODE_CLIENT)
 	{
-		if (connect(proxyinfo->socketFD, (struct sockaddr *) &(proxyinfo->sockaddr), sizeof(proxyinfo->sockaddr)) < 0)
+		debug("Client before connection");
+		if (connect(proxyinfo->connectionFD, (struct sockaddr *) &(proxyinfo->sockaddr), sizeof(proxyinfo->sockaddr)) < 0)
 		{
 			perror("Connection to server has failed. \n");
-			close(proxyinfo->socketFD);
-			return NULL;
+			return -1;
 		}
+		debug("Client after connection");
+		return 0;
+	} else
+	{
+		fprintf(stderr, "Error: unknown mode");
+	}
 
-		connectFD = proxyinfo->socketFD;
+	return -1;
+}
 
+//receive encapsulated, must decapsulate and send to tap
+void *threadTCP(void *arg)
+{
+	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
+	char buffer[BUFFER_SIZE];
+	int16_t *p_type = (int16_t *)buffer; //pointer to space in buffer holding type
+	int16_t *p_length = ((int16_t *)buffer)+1; //pointer to space in buffer holding length of message
+
+	if (proxyinfo->mode == MODE_SERVER || proxyinfo->mode == MODE_CLIENT)
+	{
 		//Perform read and write to TAP interface for active connection indefinitely
-		for (;;)
+		int offset = 0;
+		while (1)
 		{
-			//Get vlan type
-			if (read(connectFD, vlan_type, HEADER_FIELD_SIZE) < 0)
-			{
-				break;
-			}
-			//Get Length of message
-			if (read(connectFD, vlan_length, HEADER_FIELD_SIZE) < 0)
-			{
-				break;
-			}
+			log_info("CLIENT: Loop restart");
 
-			size_t lengthOfMessage = atoi(vlan_length); //convert string to integer
-
-			//Get data
-			if (read(connectFD, buffer, lengthOfMessage) < 0)
+			//Read data from TCP
+			int bytesRead = read(proxyinfo->connectionFD, buffer, BUFFER_SIZE);
+			if (bytesRead < HEADER_SIZE)
 			{
-				break;
+				fprintf(stderr, "Invalid packet received, too short.\n");
+				continue;
 			}
 
+			//Get type from header and check if equal to random 0xABCD
+			int type = ntohs(*p_type);
+			if (type != 0xABCD)
+			{
+				fprintf(stderr, "Client received wrong type. Dropping this message. Size of error msg = %d", ntohs(*p_length));
+				//continue;
+			}
+
+			//Get length of data from header
+			int length = ntohs(*p_length);
+			log_info("Length of packet is %d", length);
 			//Send data to TAP interface
-			if (write(proxyinfo->tapFD, buffer, lengthOfMessage) < 0)
+			if (write(proxyinfo->tapFD, buffer+HEADER_SIZE, length) < 0)
 			{
 					perror("Failed to write to TAP interface. \n");
 					//break
@@ -176,18 +163,9 @@ void *threadTCP(void *arg)
 		}
 	} else
 	{
-		perror("A fatal error has occured. Unknown server/client mode. \n");
-		close(proxyinfo->socketFD);
-		return NULL;
+		fprintf(stderr, "Error: unknown mode");
 	}
 
-	//Thread ended, close file descriptors
-	close(connectFD);
-	if (proxyinfo->mode == MODE_SERVER)
-	{
-		//close socketFD if server because connectFD != socketFD
-		close(proxyinfo->socketFD); 	
-	}
 	return NULL;
 }
 
@@ -195,30 +173,36 @@ void *threadTCP(void *arg)
 void *threadTAP(void *arg)
 {
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
-	int16_t vlan_type = htons(0xABCD); //random value for part 1
-	int16_t vlan_length; //holds length of buffer in bytes
-	char *buffer[BUFFER_SIZE];
-	size_t numBytesRead;
+	char buffer[BUFFER_SIZE];
+	int16_t *p_type = (int16_t *)buffer; //pointer to space in buffer holding type
+	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
+
+	debug("Starting Tap Thread");
+
+	*p_type = htons(0xABCD); //random value for type
 
 	//read data from TAP and encapsule it
-	while ( (numBytesRead = read(proxyinfo->tapFD, &buffer, BUFFER_SIZE)) > 0)
+	while (1)
 	{
-		vlan_length = htons(numBytesRead);
-		if ( (write(proxyinfo->socketFD, &vlan_type, HEADER_FIELD_SIZE)) < 0 
-			|| (write(proxyinfo->socketFD, &vlan_length, HEADER_FIELD_SIZE)) < 0
-			|| (write(proxyinfo->socketFD, &buffer, numBytesRead)) < 0 )
+		int dataLength = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE);
+		*p_length = htons(dataLength);
+		
+		log_info("Sending a packet with data length: %d", dataLength);
+		//write to TCP socket
+		if (write(proxyinfo->connectionFD, buffer, dataLength+HEADER_SIZE) < 0)
 		{
-			perror("Failed to send data from TAP to TCP socket.\n");
+			perror("Unable to send from TAP to TCP.\n");
+			return NULL;
 		}
 	}
 
-	close(proxyinfo->tapFD);
-	proxyinfo->tapFD = -1;
+	debug("Ending Tap thread");
+
 	return NULL;
 }
 
 // returns negative # on fail, FD on success
-int createSocket(char *host, unsigned short port, struct ProxyInfo *proxyinfo)
+int createSocket(char *host, int port, struct ProxyInfo *proxyinfo)
 {
 	struct sockaddr_in to; /* remote internet address */
 	struct hostent *hp = NULL; /* remote host info from gethostbyname() */
@@ -229,7 +213,7 @@ int createSocket(char *host, unsigned short port, struct ProxyInfo *proxyinfo)
 	to.sin_port = htons(port);
 	if (host == NULL)
 	{
-		to.sin_addr.s_addr = inet_addr(INADDR_ANY);
+		to.sin_addr.s_addr = INADDR_ANY;
 	} else
 	{
 		/* If internet "a.d.c.d" address is specified, use inet_addr()
@@ -243,13 +227,13 @@ int createSocket(char *host, unsigned short port, struct ProxyInfo *proxyinfo)
 				fprintf(stderr, "Host name %s not found\n", host);
 				return -1;
 			}
-			bcopy(hp->h_addr, &to.sin_addr, hp->h_length);
+			bcopy((char *)hp->h_addr, (char *)&(to.sin_addr.s_addr), hp->h_length);
 		}
 	}
 
 
-	int socketFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (socketFD == -1)
+	int connectionFD = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (connectionFD == -1)
 	{
 		perror("Failed to create socket.\n");
 		return -1;
@@ -257,41 +241,20 @@ int createSocket(char *host, unsigned short port, struct ProxyInfo *proxyinfo)
 
 	int optval = 1;
 	/* avoid EADDRINUSE error on bind() */
-	if (setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0) {
+	if (setsockopt(connectionFD, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0) {
 		perror("Failed to set socket options.\n");
 		return -1;
 	}
 
 	memset(&(proxyinfo->sockaddr), 0, sizeof(proxyinfo->sockaddr));
 	proxyinfo->sockaddr = to;
-	return socketFD;
-
-
-	/* give the connect call the sockaddr_in struct that has the address
-	* in it on the connect call */
-/*	if (connect(socketFD, &to, sizeof(to)) < 0) {
-		perror("Connect failed");
-		return -3;
-	}
-*/
-}
-
-// returns -1 on fail, FD on success
-int createTap(char *tap)
-{
-	int tapFD = -1;
-	if ( (tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI)) < 0 ) 
-	{
-		perror("Opening tap interface failed! \n");
-		return -1;
-	}
-	return tapFD;
+	return connectionFD;
 }
 
 int main(int argc, char **argv)
 {
 	struct ProxyInfo proxyinfo;
-	unsigned short port;
+	int port;
 	char *host;
 	char *tap;
 	pthread_t tcpThread;
@@ -301,13 +264,13 @@ int main(int argc, char **argv)
 	{
 		proxyinfo.mode = MODE_SERVER;
 		host = NULL;
-		port = (unsigned short)strtoul(argv[1], NULL, 0);
+		port = (int)atoi(argv[1]);
 		tap = argv[2];
 	} else if (argc == 4) // CLIENT
 	{
 		proxyinfo.mode = MODE_CLIENT;
 		host = argv[1];
-		port = (unsigned short)strtoul(argv[2], NULL, 0);
+		port = (int)atoi(argv[2]);
 		tap = argv[3];
 	} else
 	{
@@ -315,20 +278,29 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ( (proxyinfo.socketFD = createSocket(host, port, &proxyinfo) ) < 0 )
+	if ( (proxyinfo.connectionFD = createSocket(host, port, &proxyinfo) ) < 0 )
 	{
 		return 2;
 	}
 
-	if ( (proxyinfo.tapFD = createTap(tap) ) < 0 )
+	if ( (proxyinfo.tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI)) < 0 ) 
 	{
+		perror("Opening tap interface failed! \n");
 		return 3;
 	}
+
+	if (createConnection(&proxyinfo) < 0)
+	{
+		return 4;
+	}
+
 
 	pthread_create(&tcpThread,NULL,&threadTCP, &proxyinfo);
 	pthread_create(&tapThread,NULL,&threadTAP, &proxyinfo);
 	pthread_join(tcpThread,NULL);
 	pthread_join(tapThread,NULL);
-	
+
+	close(proxyinfo.connectionFD);
+	close(proxyinfo.tapFD);
 	return 0;
 }
