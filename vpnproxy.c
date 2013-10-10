@@ -133,12 +133,14 @@ void *threadTCP(void *arg)
 		while (1)
 		{
 			log_info("CLIENT: Loop restart");
+			
+			memset(buffer, 0, BUFFER_SIZE);
 
 			//Read data from TCP
 			int bytesRead = read(proxyinfo->connectionFD, buffer, BUFFER_SIZE);
 			if (bytesRead < HEADER_SIZE)
 			{
-				fprintf(stderr, "Invalid packet received, too short.\n");
+				fprintf(stderr, "Invalid packet received, too short. Dropping packet.\n");
 				continue;
 			}
 
