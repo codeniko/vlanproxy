@@ -130,7 +130,6 @@ void *threadTCP(void *arg)
 	if (proxyinfo->mode == MODE_SERVER || proxyinfo->mode == MODE_CLIENT)
 	{
 		//Perform read and write to TAP interface for active connection indefinitely
-		int offset = 0;
 		while (1)
 		{
 			log_info("CLIENT: Loop restart");
@@ -143,17 +142,22 @@ void *threadTCP(void *arg)
 				continue;
 			}
 
+			//Get length of data from header
+			int length = ntohs(*p_length);
+			log_info("Length of packet is %d", length);
+			if (length == 0) //Unexpected packet, it will be resent since this is TCP stream
+			{
+				continue;
+			}
+
 			//Get type from header and check if equal to random 0xABCD
 			int type = ntohs(*p_type);
 			if (type != 0xABCD)
 			{
 				fprintf(stderr, "Client received wrong type. Dropping this message. Size of error msg = %d", ntohs(*p_length));
-				//continue;
+				continue;
 			}
 
-			//Get length of data from header
-			int length = ntohs(*p_length);
-			log_info("Length of packet is %d", length);
 			//Send data to TAP interface
 			if (write(proxyinfo->tapFD, buffer+HEADER_SIZE, length) < 0)
 			{
