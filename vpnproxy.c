@@ -18,6 +18,7 @@
 
 #include <netdb.h>
 #include "dbg.h"
+#include <signal.h>
 
 #define MODE_SERVER 		0
 #define MODE_CLIENT 		1
@@ -26,7 +27,20 @@
 #define HEADER_SIZE			4
 #define BUFFER_SIZE			2048
 
+static pthread_t thread_public;
+static pthread_t thread_private;
 
+struct ProxyInfo;
+void printHelp();
+void closeFDs(struct ProxyInfo *proxyinfo);
+int allocate_tunnel(char *dev, int flags);
+int createConnection(struct ProxyInfo *proxyinfo);
+void *threadTCP(void *arg);
+void *threadTAP(void *arg);
+int createSocket(char *host, int port, struct ProxyInfo *proxyinfo);
+void handle_signal(int sig);
+
+//Structure holding mode of local machine, File Descriptors, and sock address
 struct ProxyInfo
 {
 	int mode;
@@ -35,9 +49,26 @@ struct ProxyInfo
 	struct sockaddr_in sockaddr;
 };
 
+//Print usage of program if arguments are incorrect.
 void printHelp()
 {
 	printf("Usage: \nServer: vpnproxy <port> <local interface>\nClient: vpnproxy <remote host> <remote port> <local interface>");
+}
+
+//Signal handler to kill threads.
+void handle_signal(int sig)
+{
+	pthread_cancel(thread_public);
+	pthread_cancel(thread_private);
+}
+
+//Close local File Descriptors and exit if remote proxy was terminated
+void closeFDs(struct ProxyInfo *proxyinfo)
+{
+	handle_signal(2);
+	close(proxyinfo->connectionFD);
+	close(proxyinfo->tapFD);
+	exit(0);
 }
 
 /**************************************************
@@ -68,10 +99,10 @@ int allocate_tunnel(char *dev, int flags)
 	return fd;
 }
 
-//returns negative number on fail
+//Create active connection
+//RETURNS: File Descriptor on success, -1 on failure.
 int createConnection(struct ProxyInfo *proxyinfo)
 {
-
 	if (proxyinfo->mode == MODE_SERVER)
 	{
 		//Assigning a name to the socket
@@ -89,6 +120,7 @@ int createConnection(struct ProxyInfo *proxyinfo)
 		}
 
 		debug("SERVER: before connection accept");
+		//Accept connection if server
 		int connectFD = accept(proxyinfo->connectionFD, NULL, NULL);
 		debug("SERVER: after connection accept");
 		if (connectFD < 0)
@@ -104,23 +136,21 @@ int createConnection(struct ProxyInfo *proxyinfo)
 	} else if (proxyinfo->mode == MODE_CLIENT)
 	{
 		debug("Client before connection");
+		//Connect to server if client
 		if (connect(proxyinfo->connectionFD, (struct sockaddr *) &(proxyinfo->sockaddr), sizeof(proxyinfo->sockaddr)) < 0)
 		{
 			perror("Connection to server has failed. \n");
 			return -1;
 		}
 		debug("Client after connection");
-		return 0;
-	} else
-	{
-		fprintf(stderr, "Error: unknown mode");
-	}
 
+		return 0;
+	}
 	return -1;
 }
 
-//receive encapsulated, must decapsulate and send to tap
-void *threadTCP(void *arg)
+//Handle for public interface - receive encapsulated, send decapsulated to private interface
+void *handle_public(void *arg)
 {
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
@@ -129,20 +159,20 @@ void *threadTCP(void *arg)
 
 	if (proxyinfo->mode == MODE_SERVER || proxyinfo->mode == MODE_CLIENT)
 	{
-		//Perform read and write to TAP interface for active connection indefinitely
+		//Perform read/write to TAP interface for active connection indefinitely
 		while (1)
 		{
 			log_info("CLIENT: Loop restart");
-
-			//Read data from TCP
+			//Read data from TCP and store number of bytes read
 			int bytesRead = read(proxyinfo->connectionFD, buffer, BUFFER_SIZE);
 			//Get length of data from header
 			int length = ntohs(*p_length);
 			log_info("Length of packet is %d", length);
 			if (bytesRead == 0 || length == 0)
 			{
-				fprintf(stderr, "Invalid packet received, too short. Dropping packet.\n");
-				continue;
+				fprintf(stderr, "Connection was closed. Exiting proxy.\n");
+				closeFDs(proxyinfo);
+				return NULL;
 			}
 
 			//Get type from header and check if equal to random 0xABCD
@@ -150,7 +180,7 @@ void *threadTCP(void *arg)
 			if (type != 0xABCD)
 			{
 				fprintf(stderr, "Client received wrong type. Dropping this message. Size of error msg = %d", ntohs(*p_length));
-				continue;
+				return NULL;
 			}
 
 			/*************** DEBUG *************/
@@ -163,23 +193,19 @@ void *threadTCP(void *arg)
 
 			/*************************************/
 
-			//Send data to TAP interface
+			//Send data to TAP (private) interface
 			if (write(proxyinfo->tapFD, buffer+HEADER_SIZE, length) < 0)
 			{
 				perror("Failed to write to TAP interface. \n");
-				//break
+				break;
 			}
 		}
-	} else
-	{
-		fprintf(stderr, "Error: unknown mode");
 	}
-
 	return NULL;
 }
 
-//receive decapsulated, must encapsulate and send to TCP
-void *threadTAP(void *arg)
+//Handle for private interface - receive decapsulated, send encapsulated to public interface
+void *handle_private(void *arg)
 {
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
@@ -187,10 +213,9 @@ void *threadTAP(void *arg)
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
 
 	debug("Starting Tap Thread");
-
 	*p_type = htons(0xABCD); //random value for type
 
-	//read data from TAP and encapsule it
+	//read data from TAP (private), encapsulate, and send to public interface
 	while (1)
 	{
 		int dataLength = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE);
@@ -221,7 +246,6 @@ void *threadTAP(void *arg)
 	}
 
 	debug("Ending Tap thread");
-
 	return NULL;
 }
 
@@ -275,14 +299,25 @@ int createSocket(char *host, int port, struct ProxyInfo *proxyinfo)
 	return connectionFD;
 }
 
+
+
 int main(int argc, char **argv)
 {
 	struct ProxyInfo proxyinfo;
 	int port;
 	char *host;
 	char *tap;
-	pthread_t tcpThread;
-	pthread_t tapThread;
+
+	//set up signal handler if proxy is killed
+	signal(SIGHUP, handle_signal);
+	signal(SIGINT, handle_signal);
+	signal(SIGKILL, handle_signal);
+	signal(SIGPIPE, handle_signal);
+	signal(SIGALRM, handle_signal);
+	signal(SIGTERM, handle_signal);
+	signal(SIGUSR1, handle_signal);
+	signal(SIGUSR2, handle_signal);
+	signal(SIGSTOP, handle_signal);
 
 	if (argc == 3) // SERVER
 	{
@@ -302,27 +337,28 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ( (proxyinfo.connectionFD = createSocket(host, port, &proxyinfo) ) < 0 )
+	if ( (proxyinfo.connectionFD = createSocket(host, port, &proxyinfo) ) == -1 )
 	{
-		return 2;
+		perror("Creating an endpoint for communication failed! \n");
+		return 1;
 	}
 
 	if ( (proxyinfo.tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI)) < 0 ) 
 	{
 		perror("Opening tap interface failed! \n");
-		return 3;
+		return 1;
 	}
-
-	if (createConnection(&proxyinfo) < 0)
+	
+	if (createConnection(&proxyinfo) == -1)
 	{
-		return 4;
+		return 1;
 	}
 
 
-	pthread_create(&tcpThread,NULL,&threadTCP, &proxyinfo);
-	pthread_create(&tapThread,NULL,&threadTAP, &proxyinfo);
-	pthread_join(tcpThread,NULL);
-	pthread_join(tapThread,NULL);
+	pthread_create(&thread_public,NULL,&handle_public, &proxyinfo);
+	pthread_create(&thread_private,NULL,&handle_private, &proxyinfo);
+	pthread_join(thread_public,NULL);
+	pthread_join(thread_private,NULL);
 
 	close(proxyinfo.connectionFD);
 	close(proxyinfo.tapFD);
