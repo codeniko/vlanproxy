@@ -38,10 +38,10 @@ void handle_signal(int sig)
 		pthread_cancel(thread_public);
 		pthread_cancel(thread_private);
 	}
+	printf("Connection has been terminated!\n");
 	close(proxyinfo->connectionFD);
 	close(proxyinfo->tapFD);
 	free(proxyinfo);
-	printf("Connection has been terminated!\n");
 	exit(0);
 }
 
@@ -293,13 +293,11 @@ int main(int argc, char **argv)
 	//set up signal handler if proxy is killed
 	signal(SIGHUP, handle_signal);
 	signal(SIGINT, handle_signal);
-	signal(SIGKILL, handle_signal);
 	signal(SIGPIPE, handle_signal);
 	signal(SIGALRM, handle_signal);
 	signal(SIGTERM, handle_signal);
 	signal(SIGUSR1, handle_signal);
 	signal(SIGUSR2, handle_signal);
-	signal(SIGSTOP, handle_signal);
 
 	proxyinfo->activeConnection = 0;
 	if (argc == 3) // SERVER
