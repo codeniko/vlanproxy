@@ -18,7 +18,7 @@ void printHelp()
 	printf("Usage: \nServer: vpnproxy <port> <local interface>\nClient: vpnproxy <remote host> <remote port> <local interface>");
 }
 
-//Signal handler to gracefully exit
+//Signal handler to gracefully exit on any termination signal. Will cause the remote proxy to terminate as well
 void handle_signal(int sig)
 {
 	//Write a special message to remote proxy to terminate if TERM-like Signal and active connection
@@ -231,7 +231,8 @@ void *handle_private(void *arg)
 	return NULL;
 }
 
-// returns negative # on fail, FD on success
+//Create a socket by specifying the host and port.
+//RETURNS: File Descriptor on success, -1 on failure.
 int createSocket(char *host, int port)
 {
 	struct sockaddr_in to; /* remote internet address */
