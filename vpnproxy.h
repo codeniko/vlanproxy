@@ -22,7 +22,6 @@
 #define MODE_SERVER			0
 #define MODE_CLIENT			1
 #define MAX_CONNECTIONS		1
-#define HEADER_FIELD_SIZE	2
 #define HEADER_SIZE			4
 #define BUFFER_SIZE			2048
 #define VLAN_TAG			0xABCD
@@ -33,10 +32,9 @@ static pthread_t thread_public;
 static pthread_t thread_private;
 
 void printHelp();
-void closeFDs();
 int allocate_tunnel(char *dev, int flags);
 int createConnection();
-void *threadTCP(void *arg);
-void *threadTAP(void *arg);
+void *handle_public(void *arg);
+void *handle_private(void *arg);
 int createSocket(char *host, int port);
 void handle_signal(int sig);
