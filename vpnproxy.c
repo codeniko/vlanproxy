@@ -1,11 +1,14 @@
 #include "vpnproxy.h"
 
+static char *TERM_MESSAGE = "YOYOYO -- Time To Close Connection -- TERMINATE";
+
 //Structure holding mode of local machine, File Descriptors, and sock address
 struct ProxyInfo
 {
 	int mode;
 	int connectionFD;
 	int tapFD;
+	int activeConnection;
 	struct sockaddr_in sockaddr;
 };
 
@@ -15,21 +18,33 @@ void printHelp()
 	printf("Usage: \nServer: vpnproxy <port> <local interface>\nClient: vpnproxy <remote host> <remote port> <local interface>");
 }
 
-//Signal handler to kill threads.
+//Signal handler to gracefully exit
 void handle_signal(int sig)
 {
-	pthread_cancel(thread_public);
-	pthread_cancel(thread_private);
-}
+	//Write a special message to remote proxy to terminate if TERM-like Signal and active connection
+	if (sig != -1 && proxyinfo->activeConnection == 1) 
+	{
+		char buffer[BUFFER_SIZE];
+		uint16_t *p_tag = (uint16_t *)buffer; //ptr to space in buffer holding tag
+		uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
+		*p_tag = htons(VLAN_TAG);
+		*p_length = htons(strlen(TERM_MESSAGE)+1);
+		bcopy(TERM_MESSAGE, buffer+HEADER_SIZE, strlen(TERM_MESSAGE)+1+HEADER_SIZE);
+		write(proxyinfo->connectionFD, buffer, strlen(TERM_MESSAGE)+1+HEADER_SIZE);
+	}
 
-//Close local File Descriptors and exit if remote proxy was terminated
-void closeFDs(struct ProxyInfo *proxyinfo)
-{
-	handle_signal(2);
+	if (proxyinfo->activeConnection == 1)
+	{
+		pthread_cancel(thread_public);
+		pthread_cancel(thread_private);
+	}
 	close(proxyinfo->connectionFD);
 	close(proxyinfo->tapFD);
+	free(proxyinfo);
+	printf("Connection has been terminated!\n");
 	exit(0);
 }
+
 
 /**************************************************
  * allocate_tunnel:
@@ -61,7 +76,7 @@ int allocate_tunnel(char *dev, int flags)
 
 //Create active connection
 //RETURNS: File Descriptor on success, -1 on failure.
-int createConnection(struct ProxyInfo *proxyinfo)
+int createConnection()
 {
 	if (proxyinfo->mode == MODE_SERVER)
 	{
@@ -90,6 +105,7 @@ int createConnection(struct ProxyInfo *proxyinfo)
 		//replace socketFD that was initially opened with active connection FD
 		close(proxyinfo->connectionFD);
 		proxyinfo->connectionFD = connectFD;
+		proxyinfo->activeConnection = 1;
 		return 0;
 	} else if (proxyinfo->mode == MODE_CLIENT)
 	{
@@ -100,6 +116,7 @@ int createConnection(struct ProxyInfo *proxyinfo)
 			return -1;
 		}
 
+		proxyinfo->activeConnection = 1;
 		return 0;
 	}
 	return -1;
@@ -108,14 +125,14 @@ int createConnection(struct ProxyInfo *proxyinfo)
 //Handle for public interface - receive encapsulated, send decapsulated to private interface
 void *handle_public(void *arg)
 {
-	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
-	uint16_t *p_tag = (uint16_t *)buffer; //pointer to space in buffer holding type
-	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
+	uint16_t *p_tag = (uint16_t *)buffer; //ptr to space in buffer holding tag
+	uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
+	int const TERM_MESSAGE_LENGTH = strlen(TERM_MESSAGE)+1;
 
 	int readOffset = 0;
 	int tryRead = 1;
-	while(1) 
+	while(1 && proxyinfo->activeConnection == 1) 
 	{
 		int bytesRead=readOffset;
 		if (tryRead)
@@ -138,8 +155,17 @@ void *handle_public(void *arg)
 			msgLength = BUFFER_SIZE;
 		}
 
+		// Check if we received the TERM_MESSAGE from remote proxy to close connection
+		if (ntohs(*p_tag) == VLAN_TAG && msgLength == TERM_MESSAGE_LENGTH && bytesRead > HEADER_SIZE)
+		{
+			if (strncmp(buffer+HEADER_SIZE, TERM_MESSAGE, TERM_MESSAGE_LENGTH) == 0)
+			{
+				handle_signal(-1);
+			}
+		}
+
 		// Confirm vlan tag is correct
-		if (ntohs(*p_tag) != 0xABCD && bytesRead >= HEADER_SIZE) 
+		if (ntohs(*p_tag) != VLAN_TAG && bytesRead >= HEADER_SIZE) 
 		{
 			fprintf(stderr,"Received an unknown message. Packet might have been lost or corrupted. Dropping packet.\n");
 			readOffset = 0;
@@ -176,19 +202,18 @@ void *handle_public(void *arg)
 //Handle for private interface - receive decapsulated, send encapsulated to public interface
 void *handle_private(void *arg)
 {
-	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
-	uint16_t *p_tag = (uint16_t *)buffer; //pointer to space in buffer holding type
-	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
+	uint16_t *p_tag = (uint16_t *)buffer; //ptr to space in buffer holding tag
+	uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
 
-	*p_tag = htons(0xABCD); 
+	*p_tag = htons(VLAN_TAG); 
 
-	while(1) 
+	while(1 && proxyinfo->activeConnection == 1) 
 	{
 		int bytesRead = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE)+HEADER_SIZE;
 
 		// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
-		if(bytesRead < HEADER_SIZE) 
+		if (bytesRead < HEADER_SIZE) 
 		{ 
 			fprintf(stderr,"Failed to receive message from private interface.\n");
 			return NULL;
@@ -207,7 +232,7 @@ void *handle_private(void *arg)
 }
 
 // returns negative # on fail, FD on success
-int createSocket(char *host, int port, struct ProxyInfo *proxyinfo)
+int createSocket(char *host, int port)
 {
 	struct sockaddr_in to; /* remote internet address */
 	struct hostent *hp = NULL; /* remote host info from gethostbyname() */
@@ -260,7 +285,7 @@ int createSocket(char *host, int port, struct ProxyInfo *proxyinfo)
 
 int main(int argc, char **argv)
 {
-	struct ProxyInfo proxyinfo;
+	proxyinfo = (struct ProxyInfo *)malloc(sizeof(struct ProxyInfo));
 	int port;
 	char *host;
 	char *tap;
@@ -276,15 +301,16 @@ int main(int argc, char **argv)
 	signal(SIGUSR2, handle_signal);
 	signal(SIGSTOP, handle_signal);
 
+	proxyinfo->activeConnection = 0;
 	if (argc == 3) // SERVER
 	{
-		proxyinfo.mode = MODE_SERVER;
+		proxyinfo->mode = MODE_SERVER;
 		host = NULL;
 		port = (int)atoi(argv[1]);
 		tap = argv[2];
 	} else if (argc == 4) // CLIENT
 	{
-		proxyinfo.mode = MODE_CLIENT;
+		proxyinfo->mode = MODE_CLIENT;
 		host = argv[1];
 		port = (int)atoi(argv[2]);
 		tap = argv[3];
@@ -294,30 +320,38 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ( (proxyinfo.connectionFD = createSocket(host, port, &proxyinfo) ) == -1 )
+	if ( (proxyinfo->connectionFD = createSocket(host, port) ) == -1 )
 	{
 		perror("Creating an endpoint for communication failed! \n");
 		return 1;
 	}
 
-	if ( (proxyinfo.tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI)) < 0 ) 
+	if ( (proxyinfo->tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI)) < 0 ) 
 	{
 		perror("Opening tap interface failed! \n");
 		return 1;
 	}
-	
-	if (createConnection(&proxyinfo) == -1)
+
+	if (proxyinfo->mode == MODE_SERVER)
+	{
+		printf("Waiting for a client to connect!\n");
+	}
+
+	if (createConnection() == -1)
 	{
 		return 1;
 	}
 
+	printf("Connection has been established!\n");
 
-	pthread_create(&thread_public,NULL,&handle_public, &proxyinfo);
-	pthread_create(&thread_private,NULL,&handle_private, &proxyinfo);
+
+	pthread_create(&thread_public,NULL,&handle_public, NULL);
+	pthread_create(&thread_private,NULL,&handle_private, NULL);
 	pthread_join(thread_public,NULL);
 	pthread_join(thread_private,NULL);
 
-	close(proxyinfo.connectionFD);
-	close(proxyinfo.tapFD);
+	close(proxyinfo->connectionFD);
+	close(proxyinfo->tapFD);
+	free(proxyinfo);
 	return 0;
 }
