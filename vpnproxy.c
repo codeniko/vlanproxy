@@ -1,44 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <stdarg.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <net/if.h>
-#include <arpa/inet.h>
-#include <linux/if_tun.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <sys/select.h>
-#include <sys/time.h>
-
-#include <netdb.h>
-#include "dbg.h"
-#include <signal.h>
-
-#define MODE_SERVER 		0
-#define MODE_CLIENT 		1
-#define MAX_CONNECTIONS		1
-#define HEADER_FIELD_SIZE	2
-#define HEADER_SIZE			4
-#define BUFFER_SIZE			2048
-
-static pthread_t thread_public;
-static pthread_t thread_private;
-
-struct ProxyInfo;
-void printHelp();
-void closeFDs(struct ProxyInfo *proxyinfo);
-int allocate_tunnel(char *dev, int flags);
-int createConnection(struct ProxyInfo *proxyinfo);
-void *threadTCP(void *arg);
-void *threadTAP(void *arg);
-int createSocket(char *host, int port, struct ProxyInfo *proxyinfo);
-void handle_signal(int sig);
+#include "vpnproxy.h"
 
 //Structure holding mode of local machine, File Descriptors, and sock address
 struct ProxyInfo
@@ -119,10 +79,8 @@ int createConnection(struct ProxyInfo *proxyinfo)
 			return -1;
 		}
 
-		debug("SERVER: before connection accept");
 		//Accept connection if server
 		int connectFD = accept(proxyinfo->connectionFD, NULL, NULL);
-		debug("SERVER: after connection accept");
 		if (connectFD < 0)
 		{
 			perror("Server unable to accept connection. \n");
@@ -135,14 +93,12 @@ int createConnection(struct ProxyInfo *proxyinfo)
 		return 0;
 	} else if (proxyinfo->mode == MODE_CLIENT)
 	{
-		debug("Client before connection");
 		//Connect to server if client
 		if (connect(proxyinfo->connectionFD, (struct sockaddr *) &(proxyinfo->sockaddr), sizeof(proxyinfo->sockaddr)) < 0)
 		{
 			perror("Connection to server has failed. \n");
 			return -1;
 		}
-		debug("Client after connection");
 
 		return 0;
 	}
@@ -154,53 +110,66 @@ void *handle_public(void *arg)
 {
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
-	int16_t *p_type = (int16_t *)buffer; //pointer to space in buffer holding type
+	uint16_t *p_tag = (uint16_t *)buffer; //pointer to space in buffer holding type
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
 
-	if (proxyinfo->mode == MODE_SERVER || proxyinfo->mode == MODE_CLIENT)
+	int readOffset = 0;
+	int tryRead = 1;
+	while(1) 
 	{
-		//Perform read/write to TAP interface for active connection indefinitely
-		while (1)
+		int bytesRead=readOffset;
+		if (tryRead)
 		{
-			log_info("CLIENT: Loop restart");
-			//Read data from TCP and store number of bytes read
-			int bytesRead = read(proxyinfo->connectionFD, buffer, BUFFER_SIZE);
-			//Get length of data from header
-			int length = ntohs(*p_length);
-			log_info("Length of packet is %d", length);
-			if (bytesRead == 0 || length == 0)
-			{
-				fprintf(stderr, "Connection was closed. Exiting proxy.\n");
-				closeFDs(proxyinfo);
-				return NULL;
-			}
+			bytesRead += read(proxyinfo->connectionFD, buffer+readOffset, BUFFER_SIZE-readOffset);
+		}
 
-			//Get type from header and check if equal to random 0xABCD
-			int type = ntohs(*p_type);
-			if (type != 0xABCD)
-			{
-				fprintf(stderr, "Client received wrong type. Dropping this message. Size of error msg = %d", ntohs(*p_length));
-				return NULL;
-			}
+		tryRead = 1;
 
-			/*************** DEBUG *************/
-			printf("Data by byte- sending to Tun from TCP (%d total):\n",bytesRead);
-			int i;
-			for(i=HEADER_SIZE;i<length;i++) {
-				printf("%4d ",buffer[i]);
-			}
-			printf("\n\n");
+		// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
+		if (bytesRead < readOffset) 
+		{
+			fprintf(stderr,"Failed to receive message from socket.\n");
+			return NULL;
+		}
 
-			/*************************************/
+		int msgLength = ntohs(*p_length);
+		if (msgLength > BUFFER_SIZE) //If msg bigger than buffer, write buffer and will then carry extra over to next write
+		{
+			msgLength = BUFFER_SIZE;
+		}
 
-			//Send data to TAP (private) interface
-			if (write(proxyinfo->tapFD, buffer+HEADER_SIZE, length) < 0)
-			{
-				perror("Failed to write to TAP interface. \n");
-				break;
-			}
+		// Confirm vlan tag is correct
+		if (ntohs(*p_tag) != 0xABCD && bytesRead >= HEADER_SIZE) 
+		{
+			fprintf(stderr,"Received an unknown message. Packet might have been lost or corrupted. Dropping packet.\n");
+			readOffset = 0;
+			continue;
+		}
+
+		// Make sure we have received the whole message, bytesRead should equal msgLength. If lower, message is incomplete.
+		if (bytesRead < HEADER_SIZE || bytesRead < msgLength) 
+		{
+			readOffset = bytesRead;
+			continue;
+		}
+
+		if( write(proxyinfo->tapFD, buffer+HEADER_SIZE, msgLength-HEADER_SIZE) < 0 ) 
+		{
+			fprintf(stderr,"Unable to write to private interface.\n");
+			return NULL;
+		}
+
+		readOffset = 0;
+
+		//If more bytes were read than the message, copy the extra to beginning of buffer.
+		if(bytesRead > msgLength) 
+		{
+			bcopy(buffer+msgLength, buffer, bytesRead-msgLength);
+			readOffset = bytesRead-msgLength;
+			tryRead = 0;
 		}
 	}
+
 	return NULL;
 }
 
@@ -209,43 +178,31 @@ void *handle_private(void *arg)
 {
 	struct ProxyInfo *proxyinfo = (struct ProxyInfo *)arg;
 	char buffer[BUFFER_SIZE];
-	int16_t *p_type = (int16_t *)buffer; //pointer to space in buffer holding type
+	uint16_t *p_tag = (uint16_t *)buffer; //pointer to space in buffer holding type
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //pointer to space in buffer holding length of message
 
-	debug("Starting Tap Thread");
-	*p_type = htons(0xABCD); //random value for type
+	*p_tag = htons(0xABCD); 
 
-	//read data from TAP (private), encapsulate, and send to public interface
-	while (1)
+	while(1) 
 	{
-		int dataLength = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE);
-		*p_length = htons(dataLength);
+		int bytesRead = read(proxyinfo->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE)+HEADER_SIZE;
 
-		log_info("Sending a packet with data length: %d", dataLength);
-		
-		
-		
-		/****************DEBUG ************/
-		printf("Data by byte- sending to TCP from Tun (%d total):\n",dataLength);
-		int i;
-		for(i=0;i<dataLength;i++) {
-			printf("%4d ",buffer[i]);
-			if(i==3)
-				printf("\n");
+		// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
+		if(bytesRead < HEADER_SIZE) 
+		{ 
+			fprintf(stderr,"Failed to receive message from private interface.\n");
+			return NULL;
 		}
-		printf("\n\n");
-		/********************************************/
 
+		*p_length = htons(bytesRead);
 
-		//write to TCP socket
-		if (write(proxyinfo->connectionFD, buffer, dataLength+HEADER_SIZE) < 0)
+		if (write(proxyinfo->connectionFD, buffer, bytesRead) < 0) 
 		{
-			perror("Unable to send from TAP to TCP.\n");
+			fprintf(stderr,"Failed to send message over socket.\n");
 			return NULL;
 		}
 	}
 
-	debug("Ending Tap thread");
 	return NULL;
 }
 
@@ -364,4 +321,3 @@ int main(int argc, char **argv)
 	close(proxyinfo.tapFD);
 	return 0;
 }
-
