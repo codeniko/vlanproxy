@@ -19,7 +19,13 @@ void closePeer(Peer *peer)
 {
 	close(peer->sock);
 	struct Hash *h = NULL;
-	HASH_FIND_STR(ht, macntoh(peer->tapMac), h);
+	char mac[12];
+
+
+	macntoh(peer->tapMac, mac);
+
+
+	HASH_FIND_STR(ht, mac, h);
 	HASH_DEL(ht, h);
 	removeAllEdgesWithPeer(peer);
 	LLremove(config->peersList, peer);
@@ -268,6 +274,11 @@ Edge *getEdge(Peer *p1, Peer *p2)
 		if (edge->peer1 == p1 && edge->peer2 == p2)
 			return edge;
 	}
+	return NULL;
+}
+
+Peer *findPeer(uint8_t *mac)
+{
 	return NULL;
 }
 

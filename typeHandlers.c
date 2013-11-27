@@ -18,71 +18,71 @@ int createStateMessage(char **buffer, int init)
 		exit(1);
 	}
 	memcpy(*buffer, '\0', bufsize);
-	unsigned long long *int64 = (*buffer) + 26;
-	uint32_t *int32 = (*buffer);
-	uint16_t *int16 = (*buffer);
-	uint8_t *int8 = (*buffer);
+	unsigned long long *int64 = (unsigned long long *)((*buffer) + 26);
+	uint32_t *int32 = (uint32_t *)(*buffer);
+	uint16_t *int16 = (uint16_t *)(*buffer);
+	uint8_t *int8 = (uint8_t *)(*buffer);
 	*int16 = htons(TYPE_LINKSTATE); //MESSAGE TYPE, 2 bytes
-	int8 = (*buffer)+6;
+	int8 = (uint8_t *)((*buffer)+6);
 	for (i = 0; i < IP_SIZE; i++)
 		*(int8 + i) = (config->peer->ip)[i]; // source listen IP
-	int16 = (*buffer) + 10;
+	int16 = (uint16_t *)((*buffer) + 10);
 	*int16 = htons(config->peer->port); // source listen port
-	int8 = (*buffer)+12;
+	int8 = (uint8_t *)((*buffer)+12);
 	for (i = 0; i < MAC_SIZE; i++)
 		*(int8 + i) = (config->peer->tapMac)[i]; // source tap mac
-	int8 = (*buffer)+18;
+	int8 = (uint8_t *)((*buffer)+18);
 	for (i = 0; i < MAC_SIZE; i++)
 		*(int8 + i) = (config->peer->ethMac)[i]; // source eth mac
 
-	int16 = (*buffer)+2;
+	int16 = (uint16_t *)((*buffer)+2);
 	//generate neighbor list
 	if (init == 1) // create initial connection link state, single record
 	{
 		*int16 = htons(70); //MESSAGE LENGTH, 2 bytes
 		*(int16+1) = htons(1); // # of edges, 2 bytes
-		int16 = (*buffer)+24;
+		int16 = (uint16_t *)((*buffer)+24);
 		*int16 = htons(1); // # of edges, 2 bytes
 
-		*int64 = htobe64(genID()); // unique ID for edge record
+		*int64 = (unsigned long long)htobe64(genID()); // unique ID for edge record
 		memcpy(buffer+26, buffer+6, 20);
-		int32 = (*buffer)+70;
+		int32 = (uint32_t *)((*buffer)+70);
 		*int32 = htonl(1); //link weight
 	} else {
 		int k;
 		*int16 = htons(bufsize-HEADER_SIZE); //MESSAGE LENGTH, 2 bytes
 		*(int16+1) = htons(numEdges); // # of edges, 2 bytes
-		int16 = (*buffer)+24;
+		int16 = (uint16_t *)((*buffer)+24);
 		*int16 = htons(numEdges); // # of edges, 2 bytes
 
 		LLNode *edgeNode = config->edgeList->head;
 		for (k = 26; k < bufsize; k+=48, edgeNode=edgeNode->next) {
 			Edge *edge = (Edge *)(edgeNode->data);
-			int64 = (*buffer)+k;
-			*int64 = htobe64(genID()); // unique ID for edge record
-			int8 = (*buffer)+k+8;
+			int64 = (unsigned long long *)((*buffer)+k);
+			*int64 = (unsigned long long)htobe64(genID()); // unique ID for edge record
+			int8 = (uint8_t *)((*buffer)+k+8);
 			for (i = 0; i < IP_SIZE; i++)
 				*(int8 + i) = (edge->peer1->ip)[i]; // peer 1 listen IP
-			int16 = (*buffer) + k + 12;
+			int16 = (uint16_t *)((*buffer) + k + 12);
 			*int16 = htons(edge->peer1->port); // peer 1 listen port
-			int8 = (*buffer)+ k + 14;
+			int8 = (uint8_t *)((*buffer)+ k + 14);
 			for (i = 0; i < MAC_SIZE; i++)
 				*(int8 + i) = (edge->peer1->tapMac)[i]; // peer 1 tap mac
-			int8 = (*buffer)+k+20;
+			int8 = (uint8_t *)((*buffer)+k+20);
 			for (i = 0; i < MAC_SIZE; i++)
 				*(int8 + i) = (edge->peer1->ethMac)[i]; // peer 1 eth mac
-			int8 = (*buffer)+k+26;
+			int8 = (uint8_t *)((*buffer)+k+26);
 			for (i = 0; i < IP_SIZE; i++)
 				*(int8 + i) = (edge->peer2->ip)[i]; // peer 2 listen IP
-			int16 = (*buffer) + k + 30;
+			int16 = (uint16_t *)((*buffer) + k + 30);
 			*int16 = htons(edge->peer2->port); // peer 2 listen port
-			int8 = (*buffer)+ k + 32;
+			int8 = (uint8_t *)((*buffer)+ k + 32);
 			for (i = 0; i < MAC_SIZE; i++)
 				*(int8 + i) = (edge->peer2->tapMac)[i]; // peer 2 tap mac
-			int8 = (*buffer)+k+38;
+			int8 = (uint8_t *)((*buffer)+k+38);
 			for (i = 0; i < MAC_SIZE; i++)
 				*(int8 + i) = (edge->peer2->ethMac)[i]; // peer 2 eth mac
-			int32 = (*buffer)+k+44;
+			int32 = (uint32_t *)((*buffer)+k+44);
 			*int32 = htonl(1); //Link weight
 		}
 	}
@@ -123,7 +123,7 @@ void leave(char *buffer, int len)
 {
 	unsigned long long *int64 = (unsigned long long *)(buffer + 16); //ID
 	uint16_t *int16 = (uint16_t *)(buffer+2); //length
-	uint8_t *int8 = (uint8_t)(buffer+10);//mac
+	uint8_t *int8 = (uint8_t *)(buffer+10);//mac
 	int i;
 
 	if (ntohs(*int16) != 20)
@@ -170,10 +170,10 @@ void quitHandle(char *buffer, int len)
 }
 void linkHandle(char *buffer, int len, Peer *peer)
 {
-	unsigned long long *int64 = buffer + 26;
-	uint32_t *int32 = buffer;
-	uint16_t *int16 = buffer+24;
-	uint8_t *int8 = buffer;
+	unsigned long long *int64 = (unsigned long long *)(buffer + 26);
+	uint32_t *int32 = (uint32_t *)buffer;
+	uint16_t *int16 = (uint16_t *)(buffer+24);
+	uint8_t *int8 = (uint8_t *)buffer;
 	int i;
 
 	uint8_t sIP[IP_SIZE]; //source ip
@@ -183,18 +183,18 @@ void linkHandle(char *buffer, int len, Peer *peer)
 	int numEdges = ntohs(*int16); // number of edges
 
 
-	int8 = buffer+6;
+	int8 = (uint8_t *)(buffer+6);
 	for (i = 0; i < IP_SIZE; i++)
 		sIP[i] = *(int8 + i); // source listen IP
-	int16 = buffer + 10;
+	int16 = (uint16_t *)(buffer + 10);
 	sPort = ntohs(*int16); // source listen port
-	int8 = buffer+12;
+	int8 = (uint8_t *)(buffer+12);
 	for (i = 0; i < MAC_SIZE; i++)
 		sTapMac[i] = *(int8 + i); // source tap mac
-	int8 = buffer+18;
+	int8 = (uint8_t *)(buffer+18);
 	for (i = 0; i < MAC_SIZE; i++)
 		sEthMac[i] = *(int8 + i); // source eth mac
-	int8 = buffer;
+	int8 = (uint8_t *)buffer;
 
 	//determine if initial link state
 	if (peer->port == -1 && numEdges == 1) {
@@ -212,7 +212,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		
 		//create an edge
 		Edge *edge = (Edge *) malloc(sizeof(Edge));
-		edge->id = be64toh(*int64);
+		edge->id = (unsigned long long)be64toh(*int64);
 		edge->peer1 = config->peer;
 		edge->peer2 = peer;
 		edge->weight = 1; /************************** change for part 3 ********/
@@ -230,17 +230,17 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		int numEdges = ntohs(*int16); // number of edges
 		int e, offset;
 		for (e = 0, offset = 26; e < numEdges; e++, offset+=48) {
-			int64 = buffer+offset;
+			int64 = (unsigned long long *)(buffer+offset);
 			//check if connected to peer 1
-			int8 = buffer+offset+14;
+			int8 = (uint8_t *)(buffer+offset+14);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
 			HASH_FIND_STR(ht, macntoh(p_tapMac), h);
 			if (h == NULL) {
-				int8 = buffer+offset+8;
+				int8 = (uint8_t *)(buffer+offset+8);
 				for (i = 0; i < IP_SIZE; i++)
 					p_ip[i] = *(int8 + i); // peer 1 listen IP
-				int16 = buffer + offset+12;
+				int16 = (uint16_t *)(buffer + offset+12);
 				p_port = ntohs(*int16); // peer 1 listen port
 				Peer *newpeer = (Peer *) malloc(sizeof(Peer));
 				char newip[16];
@@ -260,15 +260,15 @@ void linkHandle(char *buffer, int len, Peer *peer)
 				peer1 = h->peer;
 			h = NULL;
 			//check if connected to peer 2
-			int8 = buffer+offset+32;
+			int8 = (uint8_t *)(buffer+offset+32);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
 			HASH_FIND_STR(ht, macntoh(p_tapMac), h);
 			if (h == NULL) {
-				int8 = buffer+offset+26;
+				int8 = (uint8_t *)(buffer+offset+26);
 				for (i = 0; i < IP_SIZE; i++)
 					p_ip[i] = *(int8 + i); // peer 1 listen IP
-				int16 = buffer + offset+30;
+				int16 = (uint16_t *)(buffer + offset+30);
 				p_port = ntohs(*int16); // peer 1 listen port
 				Peer *newpeer = (Peer *) malloc(sizeof(Peer));
 				char newip[16];
@@ -292,13 +292,13 @@ void linkHandle(char *buffer, int len, Peer *peer)
 				if (edge == NULL) {
 					printf("Edge is not there, but should be... Adding edge");
 					edge = (Edge *) malloc(sizeof(Edge));
-					edge->id = be64toh(*int64);
+					edge->id = (unsigned long long)be64toh(*int64);
 					edge->peer1 = peer1;
 					edge->peer2 = peer2;
 					edge->weight = 1; /************** NEED TO CHANGE PART 3 ***/
 				} else { //update ID if newer, else discard
-					if (edge->id < be64toh(*int64))
-						edge->id = be64toh(*int64);
+					if (edge->id < (unsigned long long)be64toh(*int64))
+						edge->id = (unsigned long long)be64toh(*int64);
 				}
 			}
 		}
