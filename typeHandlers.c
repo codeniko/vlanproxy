@@ -2,10 +2,12 @@
 
 //len is full length, including header
 
-int createStateMessage(char **buffer, Peer *peer, int init)
+int createStateMessage(char **buffer, int init)
 { //NOTE need the number of neighbors
 	int i, bufsize;
 	int numEdges = config->edgeList->size;
+	if (numEdges == 0)
+		return 0;
 	if (init == 1)
 		bufsize = 74;
 	else 
@@ -90,12 +92,13 @@ int createStateMessage(char **buffer, Peer *peer, int init)
 void sendInitState(Peer *peer)
 {
 	char *buffer = NULL;
-	int bufsize = createStateMessage(&buffer, peer, 1);
+	int bufsize = createStateMessage(&buffer, 1);
 	if (sendall(peer->sock, buffer, &bufsize) == -1) {
 		perror("Failed to send INIT STATE");
 		fprintf(stderr, "#bytes left to send: %d", bufsize);
 		exit(1);
 	}
+	free(buffer);
 }
 
 unsigned long long genID()
@@ -116,21 +119,54 @@ void dataHandle(char *buffer, int len)
 		exit(2);
 	}
 }
+void leave(char *buffer, int len)
+{
+	unsigned long long *int64 = (unsigned long long *)(buffer + 16); //ID
+	uint16_t *int16 = (uint16_t *)(buffer+2); //length
+	uint8_t *int8 = (uint8_t)(buffer+10);//mac
+	int i;
+
+	if (ntohs(*int16) != 20)
+		return;
+	
+	struct Hash *h = NULL;
+	uint16_t mac[MAC_SIZE];
+	for (i = 0; i < MAC_SIZE; i++)
+		mac[i] = *(int8 + i); // peer 1 tap mac
+	HASH_FIND_STR(ht, macntoh(p_tapMac), h);
+	if (h == NULL)
+		return;
+	else
+		closePeer(h->peer);
+}
 void leaveHandle(char *buffer, int len)
 {
-	if ( sendall(config->tapFD, buffer+HEADER_SIZE, len-HEADER_SIZE) == -1 )
-	{
-		perror("Unable to write to private interface.\n");
-		exit(2);
+	leave(buffer, len);
+	LLNode *lln = config->peersList->head;
+	for (; lln != NULL; lln = lln->next) {
+		Peer *peer = (Peer *)lln->data;
+		if ( sendall(peer->sock, buffer, len) == -1 )
+		{
+			perror("Unable to forward LEAVE message to eth0 interface.\n");
+			exit(2);
+		}
 	}
 }
 void quitHandle(char *buffer, int len)
 {
-	if ( sendall(config->tapFD, buffer+HEADER_SIZE, len-HEADER_SIZE) == -1 )
-	{
-		perror("Unable to write to private interface.\n");
-		exit(2);
+	leave(buffer, len);
+	LLNode *lln = config->peersList->head;
+	for (; lln != NULL; lln = lln->next) {
+		Peer *peer = (Peer *)lln->data;
+		if ( sendall(peer->sock, buffer, len) == -1 )
+		{
+			perror("Unable to forward QUIT message to eth0 interface.\n");
+			exit(2);
+		}
+		closePeer(peer);
 	}
+	freeConfig();
+	exit(0);
 }
 void linkHandle(char *buffer, int len, Peer *peer)
 {

@@ -210,3 +210,55 @@ void *handle_private(void *arg)
 
 	return NULL;
 }
+
+void handle_main()
+{
+	int delay_timeout = config->linkTimeout;
+	int delay_sendstate = config->linkPeriod;
+	unsigned int last_timeout; //timestamp for timeout
+	unsigned int last_sendstate; //timestamp for sendstate 
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	last_timeout = tv.tv_sec;
+	last_sendstate = tv.tv_sec;
+	while(1)
+	{
+		gettimeofday(&tv, NULL);
+		unsigned int time = tv.tv_sec;
+		if (last_timeout + delay_timeout < time) {
+			printf("Time to check membership timeouts!\n");
+			LLNode *lln = (LLNode *) config->edgeList->head;
+			for (; lln != NULL; lln = lln->next) {
+				Edge *edge = (Edge *) lln->data;
+				unsigned long long id = edge->id / 1000000;
+				if (id+delay_timeout < time) {
+					printf("A member has timed out...\n");
+					LLremove(config->edgeList, edge);
+					free(edge);
+				}
+			}
+			
+			last_timeout = time;
+		}
+		if (last_sendstate + delay_sendstate < time) {
+			printf("Time to send link states!\n");
+			char *buffer = NULL;
+			int bufsize = createStateMessage(&buffer, 0);
+			if (bufsize > 0) {
+				LLNode *lln = (LLNode *) config->peersList->head;
+				for (; lln != NULL; lln = lln->next) {
+					Peer *peer = (Peer *) lln->data;
+					sendallstates(peer->sock, buffer, bufsize);
+				}
+			}
+			last_sendstate = time;
+		}
+
+		unsigned int a = last_timeout + delay_timeout;
+		unsigned int b = last_sendstate + delay_sendstate;
+		if (a < b)
+			sleep(last_timeout+delay_timeout-time);
+		else
+			sleep(last_sendstate+delay_sendstate-time);
+	}
+}

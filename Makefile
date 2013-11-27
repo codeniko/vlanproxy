@@ -10,11 +10,11 @@ LL: LL.o
 LL.o: LL.c LL.h
 	gcc $(CFLAGS) -c LL.c
 
-vpnproxy.o: vpnproxy.c vpnproxy.h
-	gcc $(CFLAGS) -c vpnproxy.c -pthread
+vpnproxy.o: vpnproxy.c vpnproxy.h defines.h threadHandlers.h typeHandlers.h uthash.h
+	gcc $(CFLAGS) -c vpnproxy.c threadHandlers.c typeHandlers.c -pthread
 
-vpnproxy cs352proxy: vpnproxy.o
-	gcc $(CFLAGS) -o cs352proxy -pthread
+vpnproxy cs352proxy: vpnproxy.o LL.o
+	gcc $(CFLAGS) -o cs352proxy vpnproxy.o LL.o -pthread
 	@cp cs352proxy vpnproxy
 	
 clean:

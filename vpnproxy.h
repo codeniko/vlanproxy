@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <endian.h>
+#include <linux/if_ether.h>
 
 #include <netdb.h>
 #include <signal.h>
@@ -31,13 +32,22 @@
 #define MAX_DEV_LINE 256
 
 void printHelp();
-int allocate_tunnel(char *dev, int flags char* local_mac);
+void freePeer(Peer *peer);
+void closePeer(Peer *peer);
+void freeConfig();
+void *get_in_addr(struct sockaddr *sa);
+void getAddr(char *interface, uint8_t *mac, uint8_t *ip);
+void ipntoh(uint8_t *ip, char *ip_string);
+void macntoh(uint8_t *mac, char *mac_string);
+int allocate_tunnel(char *dev, int flags, uint8_t *local_mac);
 int sendall(int sock, char *buf, int *len);
+int sendallstates(int sock, char *buf, int *len);
+int readConf(char *conf);
+Peer *getPeer(int sock);
+Edge *getEdge(Peer *p1, Peer *p2);
+void removeAllEdgesWithPeer(Peer *p);
+int vpnconnect(Peer *peer);
 int createListenSocket(struct sockaddr_in *sockaddr);
 int createSocket(Peer *peer);
-int readConf(char *conf);
-int vpnconnect(Peer *peer);
-void freePeer(Peer *peer);
-void *get_in_addr(struct sockaddr *sa);
 
 #endif

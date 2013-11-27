@@ -8,6 +8,7 @@
 void *vpnlisten(void *args);
 void *handle_public(void *arg);
 void *handle_private(void *arg);
+void handle_main();
 //void handle_signal(int sig);
 
 #endif

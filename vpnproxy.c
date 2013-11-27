@@ -15,6 +15,25 @@ void freePeer(Peer *peer)
 	free(peer);
 }
 
+void closePeer(Peer *peer)
+{
+	close(peer->sock);
+	struct Hash *h = NULL;
+	HASH_FIND_STR(ht, macntoh(peer->tapMac), h);
+	HASH_DEL(ht, h);
+	removeAllEdgesWithPeer(peer);
+	LLremove(config->peersList, peer);
+	freePeer(peer);
+}
+
+void freeConfig()
+{
+	free(config->peersList);
+	free(config->edgeList);
+	free(config->tap);
+	free(config);
+}
+
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa)
 {
@@ -252,6 +271,20 @@ Edge *getEdge(Peer *p1, Peer *p2)
 	return NULL;
 }
 
+void removeAllEdgesWithPeer(Peer *p)
+{
+	LLNode *lln = config->edgeList->head;
+	while (lln != NULL) {
+		Edge *edge = (Edge *)lln->data;
+		if (edge->peer1 == p1 || edge->peer2 == p2){
+			lln = lln->next;
+			LLremove(config->edgeList, edge);
+			free(edge);
+		} else
+			lln = lln->next;
+	}
+}
+
 int vpnconnect(Peer *peer)
 {
 	int sock = createSocket(peer);
@@ -407,10 +440,6 @@ int main(int argc, char **argv)
 	//pthread_join(thread_public,NULL);
 	//pthread_join(thread_private,NULL);
 
-//BELOW HERE UNCHECKED
-	close(config->filedesc->connectionFD);
-	close(config->filedesc->tapFD);
-	free(config->filedesc);
-	free(config);
+	handle_main();
 	return 0;
 }
