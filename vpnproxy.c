@@ -69,7 +69,7 @@ void ipntoh(uint8_t *ip, char *ip_string) //make sure ip_string is [16]
 	sprintf(ip_string, "%s.%s.%s.%s", a, b, c, d);
 }
 
-void macntoh(uint*_t *mac, char *mac_string) //make sure mac_string is [12]
+void macntoh(uint8_t *mac, char *mac_string) //make sure mac_string is [12]
 {
 	mac_string[11] = '\0';
 	sprintf(mac_string, "%.2X:%.2X:%.2X:%.2X:%.2X:%.2X", mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
@@ -131,6 +131,29 @@ int sendall(int sock, char *buf, int *len)
 	*len = total; // return number actually sent here
 
 	return n==-1?-1:0; // return -1 on failure, 0 on success
+}
+
+/*The buffer for link states packet could potentially be larger
+than max 2048 buffer size. Need to break it up into multiple
+link state packets */
+int sendallstates(int sock, char *buf, int *len)
+{
+	int setBytes = 1946 //send states in sets of 40s (1946 bytes) if > 2048 bytes
+	int remaining = *len;
+	while (remaining > 0) {
+		if (remaining < BUFFER_SIZE) {
+			*len = remaining;
+			return sendall(sock, buf, len);
+		}
+
+		int l = setBytes;
+		if (sendall(sock, buf, &l) == -1) {
+			perror("Error sending message in sendallstates!");
+			exit(1);
+		}
+		memcpy(buffer+26, buffer+setBytes, remaining-setBytes);
+		remaining = remaining - setBytes +26;
+	}
 }
 
 //return true/false
@@ -206,6 +229,28 @@ int readConf(char *conf)
 	return 1;
 }
 
+/* Get peer from socket */
+Peer *getPeer(int sock)
+{
+	LLNode *lln = config->peersList->head;
+	for (; lln != NULL; lln=lln->next) {
+		Peer *peer = (Peer *)lln->data;
+		if (peer->sock == sock)
+			return peer;
+	}
+	return NULL;
+}
+
+Edge *getEdge(Peer *p1, Peer *p2)
+{
+	LLNode *lln = config->edgeList->head;
+	for (; lln != NULL; lln=lln->next) {
+		Edge *edge = (Edge *)lln->data;
+		if (edge->peer1 == p1 && edge->peer2 == p2)
+			return edge;
+	}
+	return NULL;
+}
 
 int vpnconnect(Peer *peer)
 {
@@ -217,7 +262,9 @@ int vpnconnect(Peer *peer)
 		return -1;
 	}
 	peer->sock = sock; //successfully connected
-	//FD_SET(sock, &(config->masterFDSET));
+	FD_SET(sock, &(config->masterFDSET));
+	if (sock > config->fdMax)
+		config->fdMax = sock;
 	return sock;
 }
 
@@ -297,10 +344,12 @@ int main(int argc, char **argv)
 {
 	struct Hash *ht = NULL; 
 	config = (Config *)malloc(sizeof(Config));
+	config->peer = (Peer *) malloc(sizeof(Peer));
 	config->peersList= (LL *)malloc(sizeof(LL));
 	config->edgeList= (LL *)malloc(sizeof(LL));
 	config->tap = NULL;
-	getAddr("eth0", config->ethMac, config->ip);
+	config->fdMax = -1;
+	getAddr("eth0", config->peer->ethMac, config->peer->ip);
 	FD_ZERO(&(config->masterFDSET));
 	FD_ZERO(&(config->readFDSET));
 
@@ -319,7 +368,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ( (config->tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI, config->mac)) < 0 ) 
+	if ( (config->tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI, config->peer->tapMac)) < 0 ) 
 	{
 		perror("Opening tap interface failed! \n");
 		return 1;
@@ -332,16 +381,20 @@ int main(int argc, char **argv)
 	{ //initial peers defined in config, attempt to connect to peers
 		LLNode cur = config->peersList->head;
 		int sock;
-		for (; cur != NULL ; cur = cur->next)
+		while (cur != NULL)
 		{
 			Peer *peer = (Peer *) cur->data;
 			sock = vpnconnect(peer);
 			if (sock != -1) { //successful connection!
 				FD_SET(sock, &(config->masterFDSET));
+				if (sock > config->fdMax)
+					config->fdMax = sock;
 				sendInitState(peer);
-				//struct Hash h = (struct Hash *) malloc(sizeof(struct Hash));
-				//h->mac
-				//HASH_ADD_INT( ht, mac, s ); 
+				cur = cur->next;
+			} else { //unable to connect, remove from peersList to remain disconnected
+				cur = cur->next;
+				LLremove(config->peersList, peer);
+				freePeer(peer);
 			}
 		}
 	}

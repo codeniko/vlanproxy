@@ -18,11 +18,11 @@
 //Structure holding mode of local machine, File Descriptors, and sock address
 struct Config
 {
-	int port; //port to listen to
+	//int port; //port to listen to
 	//char *host 
-	uint8_t ip[IP_SIZE]; // listen ip address
-	uint8_t tapMac[MAC_SIZE]; //mac address of tap
-	uint8_t ethMac[MAC_SIZE]; //mac address of eth
+	//uint8_t ip[IP_SIZE]; // listen ip address
+	//uint8_t tapMac[MAC_SIZE]; //mac address of tap
+	//uint8_t ethMac[MAC_SIZE]; //mac address of eth
 	char *tap; //tap name
 	int tapFD; //tap FD
 	int linkPeriod;
@@ -60,6 +60,7 @@ typedef struct Edge
 	unsigned long long id;
 	Peer *peer1;
 	Peer *peer2;
+	int weight;
 } Edge;
 
 struct Hash

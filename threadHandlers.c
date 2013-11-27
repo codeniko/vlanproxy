@@ -70,7 +70,7 @@ void *vpnlisten(void *args)
 		peer->host = strdup(remoteIP);
 		peer->sock = sock;
 		peer->port = -1; //will be set after link state message
-		LLappend(config->peersList, peer);
+		LLappend(config->peersList, peer); //add to list of peers connected to
 		//FD_SET(sock, &(config->masterFDSET));
 	}
 }
@@ -79,12 +79,10 @@ void *vpnlisten(void *args)
 void *handle_public(void *arg)
 {
 	char buffer[BUFFER_SIZE];
-	uint16_t *p_tag = (uint16_t *)buffer; //ptr to space in buffer holding tag
+	uint16_t *p_type = (uint16_t *)buffer; //ptr to space in buffer holding message type
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
 	//int const TERM_MESSAGE_LENGTH = strlen(TERM_MESSAGE)+1;
 
-	int readOffset = 0;
-	int tryRead = 1;
 	struct timeval tv;
 	tv.tv_sec = 2;
 	tv.tv_usec = 0;
@@ -98,7 +96,7 @@ void *handle_public(void *arg)
 			exit(4);
 		}
 		if (sRes == 0) { //timeout, update FDSET
-			printf("Timeout - Updating FDSET\n");
+			printf("Select Timeout - Updating FDSET\n");
 			continue;
 		}
 		int sock = -1;
@@ -110,6 +108,11 @@ void *handle_public(void *arg)
 				break;
 			}
 		}
+		if (sock == -1)
+			continue;
+
+		int readOffset = 0;
+		int tryRead = 1;
 		while(1)
 		{
 			int bytesRead=readOffset;
@@ -121,12 +124,13 @@ void *handle_public(void *arg)
 			// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
 			if (bytesRead < readOffset) {
 				fprintf(stderr,"Failed to receive message from socket.\n");
-				return NULL;
+				exit(1);
 			}
 
 			int msgLength = ntohs(*p_length);
-			if (msgLength > BUFFER_SIZE) //If msg bigger than buffer, write buffer and will then carry extra over to next write
-				msgLength = BUFFER_SIZE;
+			//will never happen********************
+	//		if (msgLength > BUFFER_SIZE) //If msg bigger than buffer, write buffer and will then carry extra over to next write
+	//			msgLength = BUFFER_SIZE;
 
 			/*		// Check if we received the TERM_MESSAGE from remote proxy to close connection
 					if (ntohs(*p_tag) == TYPE_DATA && msgLength == TERM_MESSAGE_LENGTH && bytesRead > HEADER_SIZE) {
@@ -141,7 +145,7 @@ void *handle_public(void *arg)
 			}
 			// IF WE GET THIS FAR, ENTIRE MESSAGE (MAYBE MORE) IS IN BUFFER
 
-			int msgType = ntohs(*p_tag);
+			int msgType = ntohs(*p_type);
 			if (msgType == TYPE_DATA) {
 				dataHandle(buffer, msgLength+HEADER_SIZE);
 			} else if (msgType == TYPE_LEAVE) {
@@ -149,7 +153,7 @@ void *handle_public(void *arg)
 			} else if (msgType == TYPE_QUIT) {
 				quitHandle(buffer, msgLength+HEADER_SIZE);
 			} else if (msgType == TYPE_LINKSTATE) {
-				linkHandle(buffer, msgLength+HEADER_SIZE);
+				linkHandle(buffer, msgLength+HEADER_SIZE, getPeer(sock));
 			} else {
 				fprintf(stderr,"Received an unknown message. Packet might have been lost or corrupted. Dropping packet.\n");
 				readOffset = 0;
@@ -160,8 +164,8 @@ void *handle_public(void *arg)
 			//If more bytes were read than the message, copy the extra to beginning of buffer.
 			if(bytesRead > msgLength) 
 			{
-				memcpy(buffer, buffer+msgLength, bytesRead-msgLength);
-				readOffset = bytesRead-msgLength;
+				memcpy(buffer, buffer+HEADER_SIZE+msgLength, bytesRead-msgLength-HEADER_SIZE);
+				readOffset = bytesRead-msgLength-HEADER_SIZE;
 				tryRead = 0;
 			}
 
@@ -177,25 +181,27 @@ void *handle_public(void *arg)
 void *handle_private(void *arg)
 {
 	char buffer[BUFFER_SIZE];
-	uint16_t *p_tag = (uint16_t *)buffer; //ptr to space in buffer holding tag
+	uint16_t *p_type = (uint16_t *)buffer; //ptr to space in buffer holding tag
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
 
-	*p_tag = htons(TYPE_DATA); 
+	*p_type = htons(TYPE_DATA); 
 
 	while(1) 
 	{
 		int bytesRead = read(config->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE)+HEADER_SIZE;
-
-		// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
-		if (bytesRead < HEADER_SIZE) 
-		{ 
-			fprintf(stderr,"Failed to receive message from private interface.\n");
-			return NULL;
-		}
-
 		*p_length = htons(bytesRead);
 
-		if (write(config->connectionFD, buffer, bytesRead) < 0) 
+		struct ethhdr *ether = (struct ethhdr *)(buffer+HEADER_SIZE);
+		char mac[12];
+		mac[11] = '\0';
+		macntoh((uint8_t *)(ether->h_dest), mac);
+		struct Hash *h = NULL;
+		HASH_FIND_STR(ht, mac, h);
+		if (h == NULL)
+			continue; //layer 2 address not found, ignore message
+		printf("---MAC address found: %s\n", mac);
+
+		if (write(h->peer->sock, buffer, bytesRead) < 0) 
 		{
 			fprintf(stderr,"Failed to send message over socket.\n");
 			return NULL;
