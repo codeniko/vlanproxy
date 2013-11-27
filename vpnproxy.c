@@ -81,7 +81,7 @@ void macntoh(uint*_t *mac, char *mac_string) //make sure mac_string is [12]
  * open a tun or tap device and returns the file
  * descriptor to read/write back to the caller
  *****************************************/
-int allocate_tunnel(char *dev, int flags, char* local_mac) 
+int allocate_tunnel(char *dev, int flags, uint8_t *local_mac) 
 {
 	int fd, error;
 	struct ifreq ifr;
@@ -298,8 +298,9 @@ int main(int argc, char **argv)
 	struct Hash *ht = NULL; 
 	config = (Config *)malloc(sizeof(Config));
 	config->peersList= (LL *)malloc(sizeof(LL));
-	config->mac[6] = '\0';
+	config->edgeList= (LL *)malloc(sizeof(LL));
 	config->tap = NULL;
+	getAddr("eth0", config->ethMac, config->ip);
 	FD_ZERO(&(config->masterFDSET));
 	FD_ZERO(&(config->readFDSET));
 
@@ -324,9 +325,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	getAddr("eth0", config->ethMac, config->ip);
 	
-	pthread_create(&thread_listen,NULL,&vpnlisten, NULL); //listen thread
+	pthread_create(&(config->listenTID),NULL,&vpnlisten, NULL); //listen thread
 
 	if (config->peersList->size > 0)
 	{ //initial peers defined in config, attempt to connect to peers
@@ -347,14 +347,14 @@ int main(int argc, char **argv)
 	}
 
 
+
+
+	pthread_create(&(config->publicTID),NULL,&handle_public, NULL);
+	pthread_create(&(config->privateTID),NULL,&handle_private, NULL);
+	//pthread_join(thread_public,NULL);
+	//pthread_join(thread_private,NULL);
+
 //BELOW HERE UNCHECKED
-
-
-	pthread_create(&thread_public,NULL,&handle_public, NULL);
-	pthread_create(&thread_private,NULL,&handle_private, NULL);
-	pthread_join(thread_public,NULL);
-	pthread_join(thread_private,NULL);
-
 	close(config->filedesc->connectionFD);
 	close(config->filedesc->tapFD);
 	free(config->filedesc);

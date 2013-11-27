@@ -19,5 +19,5 @@ Neighbor list, which is N fixed sized records below:
 64     14. Proxy 2's remote Eth0 (48 bits)
 70     15 Link weight (1, 32 bit int, in micro-seconds),
 
-
+26 top, 48 bottom
 ALL 74

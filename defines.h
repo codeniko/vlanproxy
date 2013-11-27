@@ -21,7 +21,7 @@ struct Config
 	int port; //port to listen to
 	//char *host 
 	uint8_t ip[IP_SIZE]; // listen ip address
-	char tapMac[7]; //mac address of tap
+	uint8_t tapMac[MAC_SIZE]; //mac address of tap
 	uint8_t ethMac[MAC_SIZE]; //mac address of eth
 	char *tap; //tap name
 	int tapFD; //tap FD
@@ -30,7 +30,8 @@ struct Config
 	fd_set masterFDSET;
 	fd_set readFDSET;
 	int fdMax;
-	LL *peersList; //list of peers
+	LL *peersList; //list of peers connected to
+	LL *edgeList; //All edges known to proxy
 	int quitAfter;
 	pthread_t listenTID;
 	pthread_t privateTID;
@@ -40,10 +41,12 @@ typedef struct Config Config;
 
 struct Peer
 {
+	
 	char *host; //hostname or ip; if host NULL, do not send any packets
 	int port; //port to connect to
-	char tapMac[7];
-	char ethMac[7];
+	uint8_t tapMac[MAC_SIZE];
+	uint8_t ethMac[MAC_SIZE];
+	uint8_t ip[IP_SIZE]; //RECENTLY ADDED
 	//int mode;
 	int sock; // active socket, NOTE* value of -1 means inactive
 	//int tapFD;
@@ -54,15 +57,15 @@ typedef struct Peer Peer;
 
 typedef struct Edge
 {
-	long long id;
+	unsigned long long id;
 	Peer *peer1;
 	Peer *peer2;
 } Edge;
 
 struct Hash
 {
-	char mac[7]; //key
-	int sock; //active socket
+	char mac[12]; //key
+	Peer *peer; //peer associated with the key
 	UT_hash_handle hh; /* makes this structure hashable */
 };
 
