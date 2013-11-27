@@ -27,6 +27,7 @@
 #include "LL.h"
 #include "defines.h"
 #include "threadHandlers.h"
+#include "typeHandlers.h"
 
 #define BUFFER_CONF_SIZE	256
 #define MAX_DEV_LINE 256
@@ -45,6 +46,7 @@ int sendallstates(int sock, char *buf, int *len);
 int readConf(char *conf);
 Peer *getPeer(int sock);
 Edge *getEdge(Peer *p1, Peer *p2);
+Peer *findPeer(uint8_t *mac);
 void removeAllEdgesWithPeer(Peer *p);
 int vpnconnect(Peer *peer);
 int createListenSocket(struct sockaddr_in *sockaddr);

@@ -18,15 +18,6 @@ void freePeer(Peer *peer)
 void closePeer(Peer *peer)
 {
 	close(peer->sock);
-	struct Hash *h = NULL;
-	char mac[12];
-
-
-	macntoh(peer->tapMac, mac);
-
-
-	HASH_FIND_STR(ht, mac, h);
-	HASH_DEL(ht, h);
 	removeAllEdgesWithPeer(peer);
 	LLremove(config->peersList, peer);
 	freePeer(peer);
@@ -163,7 +154,7 @@ than max 2048 buffer size. Need to break it up into multiple
 link state packets */
 int sendallstates(int sock, char *buf, int *len)
 {
-	int setBytes = 1946 //send states in sets of 40s (1946 bytes) if > 2048 bytes
+	int setBytes = 1946; //send states in sets of 40s (1946 bytes) if > 2048 bytes
 	int remaining = *len;
 	while (remaining > 0) {
 		if (remaining < BUFFER_SIZE) {
@@ -176,9 +167,10 @@ int sendallstates(int sock, char *buf, int *len)
 			perror("Error sending message in sendallstates!");
 			exit(1);
 		}
-		memcpy(buffer+26, buffer+setBytes, remaining-setBytes);
+		memcpy(buf+26, buf+setBytes, remaining-setBytes);
 		remaining = remaining - setBytes +26;
 	}
+	return 0;
 }
 
 //return true/false
@@ -204,7 +196,7 @@ int readConf(char *conf)
 				fprintf(stderr, "ERROR: Invalid value for listenPort inside '%s'.\n", conf);
 				return 0;
 			}
-			config->port = atoi(tok);
+			config->peer->port = atoi(tok);
 			continue;
 		} else if (strncmp(tok, "linkPeriod", 10)) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
@@ -225,7 +217,7 @@ int readConf(char *conf)
 				fprintf(stderr, "ERROR: Invalid value for peer inside '%s'.\n", conf);
 				return 0;
 			}
-			Peer peer = (Peer *) malloc(sizeof(Peer));
+			Peer *peer = (Peer *) malloc(sizeof(Peer));
 			if (peer == NULL) {
 				perror("ERROR: Unable to allocate memory. ");
 				return 0;
@@ -277,8 +269,16 @@ Edge *getEdge(Peer *p1, Peer *p2)
 	return NULL;
 }
 
+//only return peer if active socket
 Peer *findPeer(uint8_t *mac)
 {
+	LLNode *lln = config->peersList->head;
+	for (; lln != NULL; lln=lln->next) {
+		Peer *peer = (Peer *)lln->data;
+		uint8_t *pmac = peer->tapMac;
+		if (mac[0]==pmac[0] && mac[1]==pmac[1] && mac[2]==pmac[2] && mac[3]==pmac[3] && mac[4]==pmac[4] && mac[5]==pmac[5] && peer->sock > -1 )
+			return peer;
+	}
 	return NULL;
 }
 
@@ -287,7 +287,7 @@ void removeAllEdgesWithPeer(Peer *p)
 	LLNode *lln = config->edgeList->head;
 	while (lln != NULL) {
 		Edge *edge = (Edge *)lln->data;
-		if (edge->peer1 == p1 || edge->peer2 == p2){
+		if (edge->peer1 == p || edge->peer2 == p){
 			lln = lln->next;
 			LLremove(config->edgeList, edge);
 			free(edge);
@@ -318,12 +318,11 @@ int vpnconnect(Peer *peer)
 int createListenSocket(struct sockaddr_in *sockaddr)
 {
 	struct sockaddr_in to; /* remote internet address */
-	struct hostent *hp = NULL; /* remote host info from gethostbyname() */
 
 	memset(&to, 0, sizeof(to));
 
 	to.sin_family = AF_INET;
-	to.sin_port = htons(config->port); //listening port
+	to.sin_port = htons(config->peer->port); //listening port
 	to.sin_addr.s_addr = INADDR_ANY;
 
 
@@ -386,7 +385,6 @@ int createSocket(Peer *peer)
 
 int main(int argc, char **argv)
 {
-	struct Hash *ht = NULL; 
 	config = (Config *)malloc(sizeof(Config));
 	config->peer = (Peer *) malloc(sizeof(Peer));
 	config->peersList= (LL *)malloc(sizeof(LL));
@@ -412,7 +410,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ( (config->tapFD = allocate_tunnel(tap, IFF_TAP | IFF_NO_PI, config->peer->tapMac)) < 0 ) 
+	if ( (config->tapFD = allocate_tunnel(config->tap, IFF_TAP | IFF_NO_PI, config->peer->tapMac)) < 0 ) 
 	{
 		perror("Opening tap interface failed! \n");
 		return 1;
@@ -423,7 +421,7 @@ int main(int argc, char **argv)
 
 	if (config->peersList->size > 0)
 	{ //initial peers defined in config, attempt to connect to peers
-		LLNode cur = config->peersList->head;
+		LLNode *cur = config->peersList->head;
 		int sock;
 		while (cur != NULL)
 		{

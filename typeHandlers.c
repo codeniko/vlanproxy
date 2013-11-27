@@ -17,7 +17,7 @@ int createStateMessage(char **buffer, int init)
 		fprintf(stderr, "Fatal Error: malloc has failed.");
 		exit(1);
 	}
-	memcpy(*buffer, '\0', bufsize);
+	memset(*buffer, '\0', bufsize);
 	unsigned long long *int64 = (unsigned long long *)((*buffer) + 26);
 	uint32_t *int32 = (uint32_t *)(*buffer);
 	uint16_t *int16 = (uint16_t *)(*buffer);
@@ -113,7 +113,8 @@ unsigned long long genID()
 
 void dataHandle(char *buffer, int len)
 {
-	if ( sendall(config->tapFD, buffer+HEADER_SIZE, len-HEADER_SIZE) == -1 )
+	int l = len-HEADER_SIZE;
+	if ( sendall(config->tapFD, buffer+HEADER_SIZE, &l) == -1 )
 	{
 		perror("Unable to write to private interface.\n");
 		exit(2);
@@ -121,7 +122,6 @@ void dataHandle(char *buffer, int len)
 }
 void leave(char *buffer, int len)
 {
-	unsigned long long *int64 = (unsigned long long *)(buffer + 16); //ID
 	uint16_t *int16 = (uint16_t *)(buffer+2); //length
 	uint8_t *int8 = (uint8_t *)(buffer+10);//mac
 	int i;
@@ -129,15 +129,14 @@ void leave(char *buffer, int len)
 	if (ntohs(*int16) != 20)
 		return;
 	
-	struct Hash *h = NULL;
-	uint16_t mac[MAC_SIZE];
+	uint8_t mac[MAC_SIZE];
 	for (i = 0; i < MAC_SIZE; i++)
 		mac[i] = *(int8 + i); // peer 1 tap mac
-	HASH_FIND_STR(ht, macntoh(p_tapMac), h);
+	Peer *h = findPeer(mac);
 	if (h == NULL)
 		return;
 	else
-		closePeer(h->peer);
+		closePeer(h);
 }
 void leaveHandle(char *buffer, int len)
 {
@@ -145,7 +144,8 @@ void leaveHandle(char *buffer, int len)
 	LLNode *lln = config->peersList->head;
 	for (; lln != NULL; lln = lln->next) {
 		Peer *peer = (Peer *)lln->data;
-		if ( sendall(peer->sock, buffer, len) == -1 )
+		int l = len;
+		if ( sendall(peer->sock, buffer, &l) == -1 )
 		{
 			perror("Unable to forward LEAVE message to eth0 interface.\n");
 			exit(2);
@@ -158,7 +158,8 @@ void quitHandle(char *buffer, int len)
 	LLNode *lln = config->peersList->head;
 	for (; lln != NULL; lln = lln->next) {
 		Peer *peer = (Peer *)lln->data;
-		if ( sendall(peer->sock, buffer, len) == -1 )
+		int l = len;
+		if ( sendall(peer->sock, buffer, &l) == -1 )
 		{
 			perror("Unable to forward QUIT message to eth0 interface.\n");
 			exit(2);
@@ -171,7 +172,6 @@ void quitHandle(char *buffer, int len)
 void linkHandle(char *buffer, int len, Peer *peer)
 {
 	unsigned long long *int64 = (unsigned long long *)(buffer + 26);
-	uint32_t *int32 = (uint32_t *)buffer;
 	uint16_t *int16 = (uint16_t *)(buffer+24);
 	uint8_t *int8 = (uint8_t *)buffer;
 	int i;
@@ -205,10 +205,6 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		}
 		for (i = 0; i < IP_SIZE; i++)
 			peer->ip[i] = sIP[i];
-		struct Hash *h = (struct Hash *)malloc(sizeof(struct Hash));
-		macntoh(sTapMac, h->mac);
-		h->peer = peer;
-		HASH_ADD_STR(ht, mac, h);
 		
 		//create an edge
 		Edge *edge = (Edge *) malloc(sizeof(Edge));
@@ -220,8 +216,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		sendInitState(peer);
 	} else if (numEdges == 1 && buffer[56] == '\0')
 		return;
-	} else {
-		struct Hash *h = NULL;
+	else {
 		Peer *peer1 = NULL, *peer2 = NULL;
 		uint8_t p_ip[IP_SIZE]; //source ip
 		uint16_t p_port; //source port
@@ -235,7 +230,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 			int8 = (uint8_t *)(buffer+offset+14);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
-			HASH_FIND_STR(ht, macntoh(p_tapMac), h);
+			Peer *h = findPeer(p_tapMac);
 			if (h == NULL) {
 				int8 = (uint8_t *)(buffer+offset+8);
 				for (i = 0; i < IP_SIZE; i++)
@@ -257,13 +252,13 @@ void linkHandle(char *buffer, int len, Peer *peer)
 				} else
 					freePeer(newpeer);
 			} else
-				peer1 = h->peer;
+				peer1 = h;
 			h = NULL;
 			//check if connected to peer 2
 			int8 = (uint8_t *)(buffer+offset+32);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
-			HASH_FIND_STR(ht, macntoh(p_tapMac), h);
+			h = findPeer(p_tapMac);
 			if (h == NULL) {
 				int8 = (uint8_t *)(buffer+offset+26);
 				for (i = 0; i < IP_SIZE; i++)
@@ -285,7 +280,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 				} else
 					freePeer(newpeer);
 			} else
-				peer2 = h->peer;
+				peer2 = h;
 
 			if (peer1 != NULL && peer2 != NULL) { //connected to both peers, update edge
 				Edge *edge = getEdge(peer1, peer2);

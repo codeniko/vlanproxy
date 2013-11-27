@@ -192,16 +192,12 @@ void *handle_private(void *arg)
 		*p_length = htons(bytesRead);
 
 		struct ethhdr *ether = (struct ethhdr *)(buffer+HEADER_SIZE);
-		char mac[12];
-		mac[11] = '\0';
-		macntoh((uint8_t *)(ether->h_dest), mac);
-		struct Hash *h = NULL;
-		HASH_FIND_STR(ht, mac, h);
+		Peer *h = findPeer((uint8_t *)(ether->h_dest));
 		if (h == NULL)
 			continue; //layer 2 address not found, ignore message
-		printf("---MAC address found: %s\n", mac);
+		printf("---MAC address found\n");
 
-		if (write(h->peer->sock, buffer, bytesRead) < 0) 
+		if (write(h->sock, buffer, bytesRead) < 0) 
 		{
 			fprintf(stderr,"Failed to send message over socket.\n");
 			return NULL;
@@ -248,7 +244,7 @@ void handle_main()
 				LLNode *lln = (LLNode *) config->peersList->head;
 				for (; lln != NULL; lln = lln->next) {
 					Peer *peer = (Peer *) lln->data;
-					sendallstates(peer->sock, buffer, bufsize);
+					sendallstates(peer->sock, buffer, &bufsize);
 				}
 			}
 			last_sendstate = time;
