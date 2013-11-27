@@ -6,12 +6,12 @@ int createStateMessage(char **buffer, int init)
 { //NOTE need the number of neighbors
 	int i, bufsize;
 	int numEdges = config->edgeList->size;
-	if (numEdges == 0)
-		return 0;
+	printf("DEBUG: numEdges=%d\n",numEdges);
 	if (init == 1)
 		bufsize = 74;
 	else 
 		bufsize = 26+48*numEdges;
+	printf("DEBUG: bufsize=%d\n",bufsize);
 	*buffer = (char *)malloc(sizeof(char)*bufsize);
 	if (*buffer == NULL) {
 		fprintf(stderr, "Fatal Error: malloc has failed.");
@@ -44,7 +44,7 @@ int createStateMessage(char **buffer, int init)
 		int16 = (uint16_t *)((*buffer)+24);
 		*int16 = htons(1); // # of edges, 2 bytes
 
-		*int64 = (unsigned long long)htobe64(genID()); // unique ID for edge record
+		*int64 = genID(); // unique ID for edge record
 		memcpy(buffer+26, buffer+6, 20);
 		int32 = (uint32_t *)((*buffer)+70);
 		*int32 = htonl(1); //link weight
@@ -59,7 +59,7 @@ int createStateMessage(char **buffer, int init)
 		for (k = 26; k < bufsize; k+=48, edgeNode=edgeNode->next) {
 			Edge *edge = (Edge *)(edgeNode->data);
 			int64 = (unsigned long long *)((*buffer)+k);
-			*int64 = (unsigned long long)htobe64(genID()); // unique ID for edge record
+			*int64 = genID(); // unique ID for edge record
 			int8 = (uint8_t *)((*buffer)+k+8);
 			for (i = 0; i < IP_SIZE; i++)
 				*(int8 + i) = (edge->peer1->ip)[i]; // peer 1 listen IP
@@ -91,8 +91,10 @@ int createStateMessage(char **buffer, int init)
 
 void sendInitState(Peer *peer)
 {
+	printf("Sending Init state packet to socket %d!\n", peer->sock);
 	char *buffer = NULL;
 	int bufsize = createStateMessage(&buffer, 1);
+	printf("bufsize = %d\n", bufsize);
 	if (sendall(peer->sock, buffer, &bufsize) == -1) {
 		perror("Failed to send INIT STATE");
 		fprintf(stderr, "#bytes left to send: %d", bufsize);
@@ -169,6 +171,17 @@ void quitHandle(char *buffer, int len)
 	freeConfig();
 	exit(0);
 }
+
+//is mac address my own?
+int isSelf(uint8_t *mac)
+{
+	uint8_t *mine = config->peer->tapMac;
+	if (mac[0]==mine[0] && mac[1]==mine[1] && mac[2]==mine[2] && mac[3]==mine[3] && mac[4]==mine[4] && mac[5]==mine[5])
+		return 1; //true
+	else
+		return 0; //false
+}
+
 void linkHandle(char *buffer, int len, Peer *peer)
 {
 	unsigned long long *int64 = (unsigned long long *)(buffer + 26);
@@ -206,9 +219,10 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		for (i = 0; i < IP_SIZE; i++)
 			peer->ip[i] = sIP[i];
 		
+		printf("Creating edge from init! port1: %d, port2: %d", config->peer->port, peer->port);
 		//create an edge
 		Edge *edge = (Edge *) malloc(sizeof(Edge));
-		edge->id = (unsigned long long)be64toh(*int64);
+		edge->id = *int64;
 		edge->peer1 = config->peer;
 		edge->peer2 = peer;
 		edge->weight = 1; /************************** change for part 3 ********/
@@ -222,78 +236,89 @@ void linkHandle(char *buffer, int len, Peer *peer)
 		uint16_t p_port; //source port
 		uint8_t p_tapMac[MAC_SIZE]; //source tap mac address
 		uint8_t p_ethMac[MAC_SIZE]; //source eth mac address
-		int numEdges = ntohs(*int16); // number of edges
 		int e, offset;
 		for (e = 0, offset = 26; e < numEdges; e++, offset+=48) {
 			int64 = (unsigned long long *)(buffer+offset);
+			printf("ID: %lld\n", *int64);
 			//check if connected to peer 1
 			int8 = (uint8_t *)(buffer+offset+14);
+			Peer *h = NULL;
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
-			Peer *h = findPeer(p_tapMac);
-			if (h == NULL) {
-				int8 = (uint8_t *)(buffer+offset+8);
-				for (i = 0; i < IP_SIZE; i++)
-					p_ip[i] = *(int8 + i); // peer 1 listen IP
-				int16 = (uint16_t *)(buffer + offset+12);
-				p_port = ntohs(*int16); // peer 1 listen port
-				Peer *newpeer = (Peer *) malloc(sizeof(Peer));
-				char newip[16];
-				ipntoh(p_ip, newip);
-				newpeer->host = strdup(newip);
-				newpeer->port = p_port;
-				int sock = vpnconnect(newpeer);
-				if (sock != -1) { //successful connection!
-					FD_SET(sock, &(config->masterFDSET));
-					if (sock > config->fdMax)
-						config->fdMax = sock;
-					LLappend(config->peersList, newpeer);
-					sendInitState(newpeer);
+	char x[12];
+	macntoh(p_tapMac, x);
+	printf("1 MAC: %s\n", x);
+			if (isSelf(p_tapMac) == 0) {
+	printf("%s is NOT self\n",x);
+				h = findPeer(p_tapMac);
+				if (h == NULL) {
+					int8 = (uint8_t *)(buffer+offset+8);
+					for (i = 0; i < IP_SIZE; i++)
+						p_ip[i] = *(int8 + i); // peer 1 listen IP
+					int16 = (uint16_t *)(buffer + offset+12);
+					p_port = ntohs(*int16); // peer 1 listen port
+					Peer *newpeer = (Peer *) malloc(sizeof(Peer));
+					char newip[16];
+					ipntoh(p_ip, newip);
+					printf("1   %s\n", newip);
+					newpeer->host = strdup(newip);
+					newpeer->port = p_port;
+					int sock = vpnconnect(newpeer);
+					if (sock != -1) { //successful connection!
+						FD_SET(sock, &(config->masterFDSET));
+						if (sock > config->fdMax)
+							config->fdMax = sock;
+						LLappend(config->peersList, newpeer);
+						sendInitState(newpeer);
+					} else
+						freePeer(newpeer);
 				} else
-					freePeer(newpeer);
-			} else
-				peer1 = h;
+					peer1 = h;
+			}
 			h = NULL;
 			//check if connected to peer 2
 			int8 = (uint8_t *)(buffer+offset+32);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
-			h = findPeer(p_tapMac);
-			if (h == NULL) {
-				int8 = (uint8_t *)(buffer+offset+26);
-				for (i = 0; i < IP_SIZE; i++)
-					p_ip[i] = *(int8 + i); // peer 1 listen IP
-				int16 = (uint16_t *)(buffer + offset+30);
-				p_port = ntohs(*int16); // peer 1 listen port
-				Peer *newpeer = (Peer *) malloc(sizeof(Peer));
-				char newip[16];
-				ipntoh(p_ip, newip);
-				newpeer->host = strdup(newip);
-				newpeer->port = p_port;
-				int sock = vpnconnect(newpeer);
-				if (sock != -1) { //successful connection!
-					FD_SET(sock, &(config->masterFDSET));
-					if (sock > config->fdMax)
-						config->fdMax = sock;
-					LLappend(config->peersList, newpeer);
-					sendInitState(newpeer);
+			if (isSelf(p_tapMac) == 0) {
+				h = findPeer(p_tapMac);
+				if (h == NULL) {
+					int8 = (uint8_t *)(buffer+offset+26);
+					for (i = 0; i < IP_SIZE; i++)
+						p_ip[i] = *(int8 + i); // peer 1 listen IP
+					int16 = (uint16_t *)(buffer + offset+30);
+					p_port = ntohs(*int16); // peer 1 listen port
+					Peer *newpeer = (Peer *) malloc(sizeof(Peer));
+					char newip[16];
+					ipntoh(p_ip, newip);
+					printf("2   %s\n", newip);
+					newpeer->host = strdup(newip);
+					newpeer->port = p_port;
+					int sock = vpnconnect(newpeer);
+					if (sock != -1) { //successful connection!
+						FD_SET(sock, &(config->masterFDSET));
+						if (sock > config->fdMax)
+							config->fdMax = sock;
+						LLappend(config->peersList, newpeer);
+						sendInitState(newpeer);
+					} else
+						freePeer(newpeer);
 				} else
-					freePeer(newpeer);
-			} else
-				peer2 = h;
+					peer2 = h;
+			}
 
 			if (peer1 != NULL && peer2 != NULL) { //connected to both peers, update edge
 				Edge *edge = getEdge(peer1, peer2);
 				if (edge == NULL) {
 					printf("Edge is not there, but should be... Adding edge");
 					edge = (Edge *) malloc(sizeof(Edge));
-					edge->id = (unsigned long long)be64toh(*int64);
+					edge->id = *int64;
 					edge->peer1 = peer1;
 					edge->peer2 = peer2;
 					edge->weight = 1; /************** NEED TO CHANGE PART 3 ***/
 				} else { //update ID if newer, else discard
-					if (edge->id < (unsigned long long)be64toh(*int64))
-						edge->id = (unsigned long long)be64toh(*int64);
+					if (edge->id < *int64)
+						edge->id = *int64;
 				}
 			}
 		}

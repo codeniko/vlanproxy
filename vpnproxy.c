@@ -77,6 +77,8 @@ void getAddr(char *interface, uint8_t *mac, uint8_t *ip)
 void ipntoh(uint8_t *ip, char *ip_string) //make sure ip_string is [16]
 {
 	char a[4], b[4], c[4], d[4];
+	a[3]='\0';b[3]='\0';c[3]='\0';d[3]='\0';
+
 	snprintf(a, 4, "%d", ip[0]);
 	snprintf(b, 4, "%d", ip[1]);
 	snprintf(c, 4, "%d", ip[2]);
@@ -117,7 +119,7 @@ int allocate_tunnel(char *dev, int flags, uint8_t *local_mac)
 		close(fd);
 		return error;
 	}
-	strcpy(dev, ifr.ifr_name);
+//	strcpy(dev, ifr.ifr_name);
 	// Get device MAC address //
 	sprintf(buffer,"/sys/class/net/%s/address",dev);
 	FILE* f = fopen(buffer,"r");
@@ -133,9 +135,7 @@ int sendall(int sock, char *buf, int *len)
 	int bytesleft = *len; // how many we have left to send
 	int n, i;
 	printf("SENDING to SOCK %d LEN %d\n", sock, *len);
-	for (i = 0; i < *len; i++)
-		printf("%x ", buf[i]);
-	printf("\n");
+	msg(buf, *len);
 
 	while(total < *len) {
 		n = send(sock, buf+total, bytesleft, 0);
@@ -191,28 +191,28 @@ int readConf(char *conf)
 		if (strlen(tok) >= 2 && tok[0] == '/' && tok[1] == '/')
 			continue;
 		
-		if (strncmp(tok, "listenPort", 10)) {
+		if (strncmp(tok, "listenPort", 10) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
 				fprintf(stderr, "ERROR: Invalid value for listenPort inside '%s'.\n", conf);
 				return 0;
 			}
 			config->peer->port = atoi(tok);
 			continue;
-		} else if (strncmp(tok, "linkPeriod", 10)) {
+		} else if (strncmp(tok, "linkPeriod", 10) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
 				fprintf(stderr, "ERROR: Invalid value for linkPeriod inside '%s'.\n", conf);
 				return 0;
 			}
 			config->linkPeriod = atoi(tok);
 			continue;
-		} else if (strncmp(tok, "linkTimeout", 11)) {
+		} else if (strncmp(tok, "linkTimeout", 11) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
 				fprintf(stderr, "ERROR: Invalid value for linkTimeout inside '%s'.\n", conf);
 				return 0;
 			}
 			config->linkTimeout = atoi(tok);
 			continue;
-		} else if (strncmp(tok, "peer", 4)) {
+		} else if (strncmp(tok, "peer", 4) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL || (tok2 = strtok(NULL, " ") ) == NULL ) {
 				fprintf(stderr, "ERROR: Invalid value for peer inside '%s'.\n", conf);
 				return 0;
@@ -227,18 +227,21 @@ int readConf(char *conf)
 			peer->sock = -1;
 			LLappend(config->peersList, peer);
 			continue;
-		} else if (strncmp(tok, "quitAfter", 9)) {
+		} else if (strncmp(tok, "quitAfter", 9) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
 				fprintf(stderr, "ERROR: Invalid value for quitAfter inside '%s'.\n", conf);
 				return 0;
 			}
 			config->quitAfter = atoi(tok);
 			continue;
-		} else if (strncmp(tok, "tapDevice", 9)) {
+		} else if (strncmp(tok, "tapDevice", 9) == 0) {
 			if ( (tok = strtok(NULL, " ") ) == NULL) {
 				fprintf(stderr, "ERROR: Invalid value for tapDevice inside '%s'.\n", conf);
 				return 0;
 			}
+			int len = strlen(tok);
+			if (tok[len-1] == '\n')
+				tok[len-1] = '\0';
 			config->tap = strdup(tok);
 			continue;
 		}
@@ -300,11 +303,13 @@ int vpnconnect(Peer *peer)
 {
 	int sock = createSocket(peer);
 	//Connect to server if client
+	printf("Attempting to connect to '%s' on port '%d'.\n",peer->host, peer->port);
 	if (connect(sock, (struct sockaddr *) &(peer->sockaddr), sizeof(peer->sockaddr)) < 0)
 	{
 		perror("Connection to server has failed. \n");
 		return -1;
 	}
+	peer->port = -1; //due to design... will update on init link state
 	peer->sock = sock; //successfully connected
 	FD_SET(sock, &(config->masterFDSET));
 	if (sock > config->fdMax)
@@ -317,13 +322,11 @@ int vpnconnect(Peer *peer)
 //RETURNS: File Descriptor on success, -1 on failure.
 int createListenSocket(struct sockaddr_in *sockaddr)
 {
-	struct sockaddr_in to; /* remote internet address */
+	memset(sockaddr, 0, sizeof(*sockaddr));
 
-	memset(&to, 0, sizeof(to));
-
-	to.sin_family = AF_INET;
-	to.sin_port = htons(config->peer->port); //listening port
-	to.sin_addr.s_addr = INADDR_ANY;
+	sockaddr->sin_family = AF_INET;
+	sockaddr->sin_port = htons(config->peer->port); //listening port
+	sockaddr->sin_addr.s_addr = INADDR_ANY;
 
 
 	int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -333,9 +336,13 @@ int createListenSocket(struct sockaddr_in *sockaddr)
 		return -1;
 	}
 
+	int optval = 1;
+	/* avoid EADDRINUSE error on bind() */
+	if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0) {
+		perror("Failed to set socket options.\n");
+		return -1;
+	}
 
-	memset(sockaddr, 0, sizeof(sockaddr));
-	sockaddr = &to;
 	return sock;
 }
 //Create a socket by specifying the host and port.
@@ -409,6 +416,7 @@ int main(int argc, char **argv)
 		printHelp();
 		return 1;
 	}
+	readConf(argv[1]);
 
 	if ( (config->tapFD = allocate_tunnel(config->tap, IFF_TAP | IFF_NO_PI, config->peer->tapMac)) < 0 ) 
 	{
@@ -451,4 +459,42 @@ int main(int argc, char **argv)
 
 	handle_main();
 	return 0;
+}
+
+void msg(char *buf, int len) {
+	printf("(%d)\n", len);
+	int i;
+	for (i = 0; i < len; i+=2) {
+		printf("%.2X%.2X ", ((uint8_t *)buf)[i], ((uint8_t *)buf)[i+1]);
+	}
+	printf("\n");
+}
+
+void dumpPeersList() {
+	LLNode *cur = config->peersList->head;
+	int i = 1;
+	for (; cur != NULL; cur = cur->next, i++) {
+		Peer *p = (Peer *)cur->data;
+		char ip[16];
+		ipntoh(p->ip, ip);
+		printf("(%d) IP : %s\n", i, ip);
+		printf("PORT: %d",p->port);
+		char tmac[12];
+		macntoh(p->tapMac, tmac);
+		printf("TapMac : %s", tmac);
+		char emac[12];
+		macntoh(p->ethMac, emac);
+		printf("EthMac : %s", emac);
+	}
+}
+
+void printMac(char *a, uint8_t *mac) {
+	char m[12];
+	macntoh(mac, m);
+	printf("%s  MAC: '%s'\n", a, m);
+}
+void printIP(char *a, uint8_t *ip) {
+	char m[16];
+	ipntoh(ip, m);
+	printf("%s  IP: '%s'\n", a, m);
 }

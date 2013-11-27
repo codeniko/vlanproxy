@@ -37,11 +37,8 @@ void *vpnlisten(void *args)
 	int listensock = createListenSocket(&sockaddr);
 	if (listensock == -1)
 		exit(1);
-	int optval = 1;
-	setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
 	//Assigning a name to the socket
-	if (bind(listensock, (struct sockaddr *) (&sockaddr), sizeof sockaddr) < 0)
-	{
+	if (bind(listensock, (struct sockaddr *) (&sockaddr), sizeof(sockaddr)) < 0) {
 		perror("Server binding failed.\n");
 		exit(1);
 	}
@@ -55,6 +52,7 @@ void *vpnlisten(void *args)
 
 	while (1)
 	{
+		printf("Listening for incoming connection on port %d...\n", config->peer->port);
 		//Accept connection if server
 		int sock = accept(listensock, (struct sockaddr *)&remoteaddr, &addrlen); //active, connected socket created
 		if (sock < 0)
@@ -62,16 +60,18 @@ void *vpnlisten(void *args)
 			perror("Server unable to accept connection. \n");
 			continue;
 		}
+		//printf("Accepted incoming connection on socket %d\n", sock);
 		printf("Accepted incoming connection from %s on socket %d\n", inet_ntop(remoteaddr.ss_family, get_in_addr((struct sockaddr*)&remoteaddr), remoteIP, INET_ADDRSTRLEN), sock);
 
 		//replace socketFD that was initially opened with active connection FD
-		//close(config->filedesc->connectionFD);
 		Peer *peer = (Peer *) malloc(sizeof(Peer));
 		peer->host = strdup(remoteIP);
 		peer->sock = sock;
 		peer->port = -1; //will be set after link state message
 		LLappend(config->peersList, peer); //add to list of peers connected to
-		//FD_SET(sock, &(config->masterFDSET));
+		FD_SET(sock, &(config->masterFDSET));
+		if (sock > config->fdMax)
+			config->fdMax = sock;
 	}
 }
 
@@ -83,11 +83,11 @@ void *handle_public(void *arg)
 	uint16_t *p_length = ((uint16_t *)buffer)+1; //ptr to space in buffer holding length of message
 	//int const TERM_MESSAGE_LENGTH = strlen(TERM_MESSAGE)+1;
 
-	struct timeval tv;
-	tv.tv_sec = 2;
-	tv.tv_usec = 0;
 	while(1) 
 	{ //over, here, how to add select? maybe inner infinite while loop
+		struct timeval tv;
+		tv.tv_sec = 2;
+		tv.tv_usec = 0;
 		FD_ZERO(&(config->readFDSET));
 		config->readFDSET = config->masterFDSET;
 		int sRes = select(config->fdMax+1, &(config->readFDSET), NULL, NULL, &tv);
@@ -115,16 +115,27 @@ void *handle_public(void *arg)
 		int tryRead = 1;
 		while(1)
 		{
+			dumpPeersList();
 			int bytesRead=readOffset;
-			if (tryRead)
-				bytesRead += read(sock, buffer+readOffset, BUFFER_SIZE-readOffset);
+			int r = 0;
+			if (tryRead) {
+				r = read(sock, buffer+readOffset, BUFFER_SIZE-readOffset);
+				if (r == 0) {
+					close(sock);
+					readOffset = 0;
+					break;
+				}
+				bytesRead += r;
+			}
 
+			
 			tryRead = 1;
 
 			// If read < 0, then error - NOTE* bytesRead will always have atleast HEADER_SIZE
 			if (bytesRead < readOffset) {
 				fprintf(stderr,"Failed to receive message from socket.\n");
-				exit(1);
+				close(sock);
+				break;
 			}
 
 			int msgLength = ntohs(*p_length);
@@ -145,14 +156,20 @@ void *handle_public(void *arg)
 			}
 			// IF WE GET THIS FAR, ENTIRE MESSAGE (MAYBE MORE) IS IN BUFFER
 
+			printf("HOORAY! Received an entire message! \n");
+			msg(buffer, msgLength+4);
 			int msgType = ntohs(*p_type);
 			if (msgType == TYPE_DATA) {
+				printf("It's data!\n");
 				dataHandle(buffer, msgLength+HEADER_SIZE);
 			} else if (msgType == TYPE_LEAVE) {
+				printf("It's leave!\n");
 				leaveHandle(buffer, msgLength+HEADER_SIZE);
 			} else if (msgType == TYPE_QUIT) {
+				printf("It's quit!\n");
 				quitHandle(buffer, msgLength+HEADER_SIZE);
 			} else if (msgType == TYPE_LINKSTATE) {
+				printf("It's link state! Length is %d.\n", msgLength);
 				linkHandle(buffer, msgLength+HEADER_SIZE, getPeer(sock));
 			} else {
 				fprintf(stderr,"Received an unknown message. Packet might have been lost or corrupted. Dropping packet.\n");
@@ -170,7 +187,10 @@ void *handle_public(void *arg)
 			}
 
 			if (tryRead == 1 && readOffset == 0) // done reading, break and listen FD
+			{
+				printf("eeeyyy");
 				break;
+			}
 		}
 	}
 
@@ -189,15 +209,21 @@ void *handle_private(void *arg)
 	while(1) 
 	{
 		int bytesRead = read(config->tapFD, buffer+HEADER_SIZE, BUFFER_SIZE-HEADER_SIZE)+HEADER_SIZE;
+		if (bytesRead < HEADER_SIZE) {
+			close(config->tapFD);
+			printf("TAP CLOSED\n");
+			exit(0);
+		}
 		*p_length = htons(bytesRead);
 
+		msg(buffer, bytesRead);
 		struct ethhdr *ether = (struct ethhdr *)(buffer+HEADER_SIZE);
 		Peer *h = findPeer((uint8_t *)(ether->h_dest));
 		if (h == NULL)
 			continue; //layer 2 address not found, ignore message
 		printf("---MAC address found\n");
 
-		if (write(h->sock, buffer, bytesRead) < 0) 
+		if (send(h->sock, buffer, bytesRead, 0) < 0) 
 		{
 			fprintf(stderr,"Failed to send message over socket.\n");
 			return NULL;
@@ -240,14 +266,16 @@ void handle_main()
 			printf("Time to send link states!\n");
 			char *buffer = NULL;
 			int bufsize = createStateMessage(&buffer, 0);
-			if (bufsize > 0) {
+			if (bufsize > 50) {
 				LLNode *lln = (LLNode *) config->peersList->head;
 				for (; lln != NULL; lln = lln->next) {
 					Peer *peer = (Peer *) lln->data;
 					sendallstates(peer->sock, buffer, &bufsize);
 				}
-			}
+			} else
+				printf("No edges recorded... not sending link states.\n");
 			last_sendstate = time;
+			free(buffer);
 		}
 
 		unsigned int a = last_timeout + delay_timeout;

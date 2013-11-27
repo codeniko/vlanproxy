@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <endian.h>
+#include <stdint.h>
 #include <linux/if_ether.h>
 
 #include <netdb.h>
@@ -51,5 +52,10 @@ void removeAllEdgesWithPeer(Peer *p);
 int vpnconnect(Peer *peer);
 int createListenSocket(struct sockaddr_in *sockaddr);
 int createSocket(Peer *peer);
+
+void msg(char *buf, int len);
+void dumpPeersList();
+void printMac(char *a, uint8_t *mac);
+void printIP(char *a, uint8_t *ip);
 
 #endif
