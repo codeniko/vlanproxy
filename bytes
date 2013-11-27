@@ -1,0 +1,23 @@
+0  Type (16 bit int ): 0xABAC
+2  Length: (16 bit int): variable
+4  Number of neighbors (16 bit int)
+Fields: Source/Origin
+6   1. Listen IP (32 bits),
+10  2. Listen port (16 bits),
+12   3. TAP MAC (48 bits),
+18    4 .Eth0 MAC address (48 bits),
+24    5. Number of neighbors (16 bits)
+Neighbor list, which is N fixed sized records below:
+26   6 Unique ID for this edge record (64 bit integer).
+34    7. Proxy 1's Public IP (32 bits),
+38     8. Proxy 1's Public listen port (16 bits),
+40      9. Proxy 1'sTap MAC (48 bits),
+46     10. Proxy 1's Eth0 MAC (48 bits)
+52     11. Proxy 2's listen IP (32 bits),
+56      12. Proxy 2's listen port (16 bits),
+58     13. Proxy 2's TAP MAC address (48 bits),
+64     14. Proxy 2's remote Eth0 (48 bits)
+70     15 Link weight (1, 32 bit int, in micro-seconds),
+
+
+ALL 74
