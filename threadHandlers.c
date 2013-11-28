@@ -115,17 +115,9 @@ void *handle_public(void *arg)
 		int tryRead = 1;
 		while(1)
 		{
-			dumpPeersList();
 			int bytesRead=readOffset;
-			int r = 0;
 			if (tryRead) {
-				r = read(sock, buffer+readOffset, BUFFER_SIZE-readOffset);
-				if (r == 0) {
-					close(sock);
-					readOffset = 0;
-					break;
-				}
-				bytesRead += r;
+				bytesRead += read(sock, buffer+readOffset, BUFFER_SIZE-readOffset);
 			}
 
 			
@@ -139,15 +131,9 @@ void *handle_public(void *arg)
 			}
 
 			int msgLength = ntohs(*p_length);
-			//will never happen********************
-	//		if (msgLength > BUFFER_SIZE) //If msg bigger than buffer, write buffer and will then carry extra over to next write
-	//			msgLength = BUFFER_SIZE;
+			if (msgLength > BUFFER_SIZE) //If msg bigger than buffer, write buffer and will then carry extra over to next write
+				msgLength = BUFFER_SIZE;
 
-			/*		// Check if we received the TERM_MESSAGE from remote proxy to close connection
-					if (ntohs(*p_tag) == TYPE_DATA && msgLength == TERM_MESSAGE_LENGTH && bytesRead > HEADER_SIZE) {
-					if (strncmp(buffer+HEADER_SIZE, TERM_MESSAGE, TERM_MESSAGE_LENGTH) == 0)
-					handle_signal(-1);
-					}*/
 
 			// Make sure we have received the whole message, bytesRead should equal msgLength. If lower, message is incomplete.
 			if (bytesRead < HEADER_SIZE || bytesRead < msgLength) {
@@ -184,13 +170,9 @@ void *handle_public(void *arg)
 				memcpy(buffer, buffer+HEADER_SIZE+msgLength, bytesRead-msgLength-HEADER_SIZE);
 				readOffset = bytesRead-msgLength-HEADER_SIZE;
 				tryRead = 0;
-			}
-
-			if (tryRead == 1 && readOffset == 0) // done reading, break and listen FD
-			{
-				printf("eeeyyy");
+			} else
 				break;
-			}
+
 		}
 	}
 
@@ -219,11 +201,13 @@ void *handle_private(void *arg)
 		msg(buffer, bytesRead);
 		struct ethhdr *ether = (struct ethhdr *)(buffer+HEADER_SIZE);
 		Peer *h = findPeer((uint8_t *)(ether->h_dest));
+		//char mac[12];
+		//macntoh((uint8_t *)(ether->h_dest), mac);
+		//printf("%p with mac %s\n", h, mac);
 		if (h == NULL)
 			continue; //layer 2 address not found, ignore message
-		printf("---MAC address found\n");
 
-		if (send(h->sock, buffer, bytesRead, 0) < 0) 
+		if (write(h->sock, buffer, bytesRead) < 0) 
 		{
 			fprintf(stderr,"Failed to send message over socket.\n");
 			return NULL;

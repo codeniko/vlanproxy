@@ -60,6 +60,7 @@ int createStateMessage(char **buffer, int init)
 			Edge *edge = (Edge *)(edgeNode->data);
 			int64 = (unsigned long long *)((*buffer)+k);
 			*int64 = genID(); // unique ID for edge record
+			edge->id = (unsigned long long)(*int64);
 			int8 = (uint8_t *)((*buffer)+k+8);
 			for (i = 0; i < IP_SIZE; i++)
 				*(int8 + i) = (edge->peer1->ip)[i]; // peer 1 listen IP
@@ -248,10 +249,11 @@ void linkHandle(char *buffer, int len, Peer *peer)
 	char x[12];
 	macntoh(p_tapMac, x);
 	printf("1 MAC: %s\n", x);
-			if (isSelf(p_tapMac) == 0) {
-	printf("%s is NOT self\n",x);
-				h = findPeer(p_tapMac);
-				if (h == NULL) {
+			h = findPeer(p_tapMac);
+			if (h == NULL) {
+				if (isSelf(p_tapMac) == 1) {
+					h = config->peer;
+				} else {
 					int8 = (uint8_t *)(buffer+offset+8);
 					for (i = 0; i < IP_SIZE; i++)
 						p_ip[i] = *(int8 + i); // peer 1 listen IP
@@ -260,7 +262,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 					Peer *newpeer = (Peer *) malloc(sizeof(Peer));
 					char newip[16];
 					ipntoh(p_ip, newip);
-					printf("1   %s\n", newip);
+		printf("1   %s\n", newip);
 					newpeer->host = strdup(newip);
 					newpeer->port = p_port;
 					int sock = vpnconnect(newpeer);
@@ -272,17 +274,23 @@ void linkHandle(char *buffer, int len, Peer *peer)
 						sendInitState(newpeer);
 					} else
 						freePeer(newpeer);
-				} else
-					peer1 = h;
-			}
+				}
+			} else
+				peer1 = h;
+
 			h = NULL;
 			//check if connected to peer 2
 			int8 = (uint8_t *)(buffer+offset+32);
 			for (i = 0; i < MAC_SIZE; i++)
 				p_tapMac[i] = *(int8 + i); // peer 1 tap mac
-			if (isSelf(p_tapMac) == 0) {
-				h = findPeer(p_tapMac);
-				if (h == NULL) {
+	char y[12];
+macntoh(p_tapMac, y);
+	printf("2 MAC: %s\n", y);
+			h = findPeer(p_tapMac);
+			if (h == NULL) {
+				if (isSelf(p_tapMac) == 1) {
+					h = config->peer;
+				} else {
 					int8 = (uint8_t *)(buffer+offset+26);
 					for (i = 0; i < IP_SIZE; i++)
 						p_ip[i] = *(int8 + i); // peer 1 listen IP
@@ -291,7 +299,7 @@ void linkHandle(char *buffer, int len, Peer *peer)
 					Peer *newpeer = (Peer *) malloc(sizeof(Peer));
 					char newip[16];
 					ipntoh(p_ip, newip);
-					printf("2   %s\n", newip);
+		printf("2   %s\n", newip);
 					newpeer->host = strdup(newip);
 					newpeer->port = p_port;
 					int sock = vpnconnect(newpeer);
@@ -303,9 +311,9 @@ void linkHandle(char *buffer, int len, Peer *peer)
 						sendInitState(newpeer);
 					} else
 						freePeer(newpeer);
-				} else
-					peer2 = h;
-			}
+				}
+			} else
+				peer2 = h;
 
 			if (peer1 != NULL && peer2 != NULL) { //connected to both peers, update edge
 				Edge *edge = getEdge(peer1, peer2);
