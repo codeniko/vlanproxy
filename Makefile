@@ -1,3 +1,3 @@
 all:
-	gcc -c vpnproxy.c vpnproxy.h -pthread
-	gcc -o cs352proxy vpnproxy.o -pthread
+	gcc -c vlanproxy.c vlanproxy.h -pthread
+	gcc -o cs352proxy vlanproxy.o -pthread

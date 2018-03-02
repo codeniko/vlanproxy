@@ -1,4 +1,4 @@
-#include "vpnproxy.h"
+#include "vlanproxy.h"
 
 static char *TERM_MESSAGE = "YOYOYO -- Time To Close Connection -- TERMINATE";
 
@@ -15,7 +15,7 @@ struct ProxyInfo
 //Print usage of program if arguments are incorrect.
 void printHelp()
 {
-	printf("Usage: \nServer: vpnproxy <port> <local interface>\nClient: vpnproxy <remote host> <remote port> <local interface>");
+	printf("Usage: \nServer: vlanproxy <port> <local interface>\nClient: vlanproxy <remote host> <remote port> <local interface>");
 }
 
 //Signal handler to gracefully exit on any termination signal. Will cause the remote proxy to terminate as well
